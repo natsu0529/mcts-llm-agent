@@ -11,7 +11,7 @@ from typing import Annotated, NoReturn
 import typer
 from rich.console import Console
 
-from agent_mcts import __version__, project, tui
+from agent_mcts import __version__, project, tui, update_check
 from agent_mcts.adapters import AdapterError, ClaudeCodeAdapter
 from agent_mcts.core import journal
 from agent_mcts.core.engine import SearchEngine
@@ -50,6 +50,10 @@ def main(
     ] = False,
 ) -> None:
     """agent-mcts — MCTS test-time search for coding agents."""
+    if console.is_terminal:
+        message = update_check.notice(__version__)
+        if message is not None:
+            console.print(f"[dim]{message}[/]")
 
 
 @app.command()

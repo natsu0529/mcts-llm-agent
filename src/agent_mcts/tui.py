@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import UTC, datetime
 from types import TracebackType
 from typing import Self
 
-from rich.console import Console, Group, RenderableType
+from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
 from rich.live import Live
 from rich.markup import escape
 from rich.text import Text
@@ -27,6 +29,9 @@ def node_label(tree: Tree, node: Node) -> str:
     reward = f"r={node.reward:.2f}" if node.reward is not None else "r=?"
     stats = escape(f"[{reward} Q={node.q:.2f} N={node.visits}]")
     summary = escape(node.summary.splitlines()[0][:60]) if node.summary else ""
+    if node.status is NodeStatus.RUNNING:
+        elapsed = int((datetime.now(UTC) - node.created_at).total_seconds())
+        summary = f"[dim]expanding… {elapsed}s[/]"
     best = tree.best()
     marker = "  [bold magenta]← best[/]" if best is not None and node.id == best.id else ""
     return f"{icon} [bold]{node.id}[/] {stats} {summary}{marker}"
@@ -47,6 +52,16 @@ def _add_children(tree: Tree, node: Node, rich_node: RichTree) -> None:
         _add_children(tree, child, branch)
 
 
+class _Dynamic:
+    """Re-renders on every Live refresh tick, so elapsed times move on their own."""
+
+    def __init__(self, render: Callable[[], RenderableType]) -> None:
+        self._render = render
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        yield self._render()
+
+
 class LiveSearchView:
     """Renders the growing search tree in place while the engine runs.
 
@@ -57,7 +72,7 @@ class LiveSearchView:
 
     def __init__(self, engine: SearchEngine, console: Console) -> None:
         self.engine = engine
-        self._live = Live(self._render(), console=console, refresh_per_second=4)
+        self._live = Live(_Dynamic(self._render), console=console, refresh_per_second=4)
 
     def __enter__(self) -> Self:
         self._live.__enter__()
@@ -69,11 +84,11 @@ class LiveSearchView:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        self._live.update(self._render())  # final frame reflects the finished tree
+        self._live.refresh()  # final frame reflects the finished tree
         self._live.__exit__(exc_type, exc, tb)
 
     def refresh(self) -> None:
-        self._live.update(self._render())
+        self._live.refresh()
 
     def _render(self) -> RenderableType:
         engine = self.engine

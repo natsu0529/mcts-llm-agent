@@ -96,9 +96,15 @@ class Tree:
         return out
 
     def best(self) -> Node | None:
-        """Highest-reward evaluated node — the branch `apply` offers by default."""
+        """Highest-reward evaluated node — the branch `apply` offers by default.
+
+        Ties prefer deeper nodes: an attempt that did work beats the untouched
+        baseline scoring the same (e.g. both 1.0 on an already-green suite).
+        """
         scored = [n for n in self.nodes.values() if n.reward is not None]
-        return max(scored, key=lambda n: n.reward or 0.0) if scored else None
+        if not scored:
+            return None
+        return max(scored, key=lambda n: (n.reward or 0.0, len(self.path(n.id))))
 
     def backup(self, node_id: str, value: float) -> list[Node]:
         """Propagate `value` from `node_id` to the root; returns the updated nodes."""

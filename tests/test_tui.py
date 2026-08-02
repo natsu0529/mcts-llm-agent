@@ -1,4 +1,5 @@
 import io
+import re
 from pathlib import Path
 
 from rich.console import Console
@@ -56,6 +57,14 @@ def test_node_label_unscored() -> None:
     tree = make_tree()
     pending = tree.add(Node(id="n2", parent_id="n0", status=NodeStatus.RUNNING))
     assert "r=?" in node_label(tree, pending)
+
+
+def test_running_node_shows_elapsed_seconds() -> None:
+    tree = make_tree()
+    running = tree.add(Node(id="n2", parent_id="n0", status=NodeStatus.RUNNING))
+    label = node_label(tree, running)
+    assert "expanding…" in label
+    assert re.search(r"\ds", label)
 
 
 class NullAdapter:

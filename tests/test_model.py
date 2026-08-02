@@ -65,3 +65,13 @@ def test_best_is_none_without_rewards() -> None:
     tree = make_tree()
     tree.add(Node(id="n0"))
     assert tree.best() is None
+
+
+def test_best_prefers_deeper_node_on_tie() -> None:
+    # A green-suite baseline and a successful attempt both score 1.0;
+    # the attempt (which did work) must win the tie, not the untouched root.
+    tree = make_tree()
+    tree.add(Node(id="n0", reward=1.0, status=NodeStatus.EVALUATED))
+    tree.add(Node(id="n1", parent_id="n0", reward=1.0, status=NodeStatus.EVALUATED))
+    best = tree.best()
+    assert best is not None and best.id == "n1"

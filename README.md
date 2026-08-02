@@ -105,6 +105,10 @@ max_depth = 3
 
 CLI flags (`-n`, `--max-cost`, `--value`, `--model`) override the file. If your `claude` binary lives somewhere unusual, point `AGENT_MCTS_CLAUDE_BIN` at it.
 
+> **Python projects managed with uv:** the value command runs inside fresh worktrees, which don't inherit your virtualenv — use `command = "uv run pytest -q"` (or pass `--value "uv run pytest -q"`) so each worktree resolves its own environment.
+
+agent-mcts checks PyPI at most once a day and prints a one-line hint when a newer version exists; set `AGENT_MCTS_NO_UPDATE_CHECK=1` to disable.
+
 Search hyperparameters are first-class: this is built by an MCTS researcher and meant to double as a research harness for test-time search over real software tasks.
 
 ## Roadmap
