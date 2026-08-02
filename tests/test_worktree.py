@@ -5,22 +5,7 @@ import pytest
 
 from agent_mcts.core.worktree import GitError, WorktreeManager
 
-
-@pytest.fixture
-def repo(tmp_path: Path) -> Path:
-    root = tmp_path / "repo"
-    root.mkdir()
-
-    def run(*args: str) -> None:
-        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
-
-    run("init", "-q")
-    run("config", "user.name", "Test")
-    run("config", "user.email", "test@example.com")
-    (root / "app.py").write_text("print('hi')\n")
-    run("add", "-A")
-    run("commit", "-qm", "init")
-    return root
+# the shared `repo` fixture lives in conftest.py
 
 
 def test_create_snapshots_and_isolation(repo: Path) -> None:

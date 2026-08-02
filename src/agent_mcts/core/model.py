@@ -32,6 +32,7 @@ class Node(BaseModel):
     branch: str | None = None  # git branch holding this node's code snapshot
 
     reward: float | None = None  # this node's own evaluation in [0, 1]
+    eval_detail: str = ""  # value-function feedback (fed into children's revision prompts)
     visits: int = 0  # MCTS N
     value_sum: float = 0.0  # MCTS W
 
