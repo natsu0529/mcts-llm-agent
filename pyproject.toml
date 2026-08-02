@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-mcts"
-version = "0.1.0.dev0"
+dynamic = ["version"]
 description = "Turn any coding agent into a tree-searching agent — an MCTS test-time search harness for Claude Code, Codex CLI, Kimi CLI, and more."
 readme = "README.md"
 license = "MIT"
@@ -48,6 +48,9 @@ Issues = "https://github.com/natsu0529/mcts-llm-agent/issues"
 
 [project.scripts]
 agent-mcts = "agent_mcts.cli:app"
+
+[tool.hatch.version]
+path = "src/agent_mcts/__init__.py"
 
 [dependency-groups]
 dev = [

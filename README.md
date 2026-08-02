@@ -4,7 +4,9 @@
 
 `agent-mcts` is an open-source (MIT) test-time search harness that wraps coding agents — Claude Code, Codex CLI, Kimi CLI — with Monte Carlo Tree Search. Instead of a single trajectory that either works or doesn't, your agent explores multiple solution branches, backtracks from dead ends, and concentrates budget on the most promising path.
 
-> **Status: early development (pre-alpha).** The design is settled, the code is being written in the open. Star the repo to follow along, or [jump in](#contributing) — early contributors shape the architecture.
+<!-- demo GIF goes here once recorded — see demo/demo.tape -->
+
+> **Status: v0.1 is implemented and being released.** Built in the open; star the repo to follow along, or [jump in](#contributing) — early contributors shape the architecture.
 
 ## Why
 
@@ -21,38 +23,38 @@ Research shows search helps: [SWE-Search (ICLR 2025)](https://arxiv.org/abs/2410
 
 ## Quickstart
 
-> ⚠️ Not yet on PyPI — the interface below is the committed design and tracks the implementation.
+> ⚠️ First release is in flight — if `uv tool install agent-mcts` fails, install from source: `uv tool install git+https://github.com/natsu0529/mcts-llm-agent`.
 
 ```bash
 uv tool install agent-mcts
 cd your-project
-agent-mcts "fix the flaky test in tests/test_auth.py"
+agent-mcts run "fix the flaky test in tests/test_auth.py"
 ```
 
-First run auto-detects your installed agent and your test command, then shows the plan before spending anything:
+The run auto-detects your installed agent and your test command, then shows the plan before spending anything:
 
 ```
-Agent: claude  ·  Value fn: pytest -x -q  ·  Budget: 12 nodes (est. $3–8)
-Continue? [Y/n]
+Agent: claude · Value: pytest -x -q · Budget: 12 nodes / $10.00
+Proceed? [y/N]
 ```
 
-While searching, the tree renders live:
+While searching, the tree grows live in your terminal (real output):
 
 ```
-● root  fix flaky test_auth
-├─ ● n1  [Q=0.80  N=5]  mock the clock
-│  ├─ ✓ n4  [Q=0.90]  freeze time in fixture   ← best
-│  └─ ✗ n5  [Q=0.20]  sleep-based fix
-└─ ● n2  [Q=0.40  N=2]  rewrite assertion
+task: fix the flaky test in tests/test_auth.py
+run 20260802-190219 · episodes 3/12 · cost $0.31/$10.00
+✓ n0 [r=0.00 Q=0.42 N=4]
+├── ✓ n1 [r=0.67 Q=0.78 N=2] mocked the clock in the auth fixture
+│   └── ● n3 [r=? Q=0.00 N=0] expanding…
+└── ✗ n2 [r=0.00 Q=0.00 N=1] sleep-based fix (tests timed out)
 ```
 
-When it finishes (or when you Ctrl-C — MCTS is anytime):
+When it finishes (or when you Ctrl-C — MCTS is anytime, the partial tree is saved):
 
 ```bash
-agent-mcts show        # inspect the tree and per-node agent transcripts
-agent-mcts apply       # merge the best branch into your working tree
-agent-mcts apply n5    # ...or pick a different branch
-agent-mcts resume      # continue searching from where you stopped
+agent-mcts show        # inspect the tree; `show n3` prints a node's prompt, summary, evaluation
+agent-mcts apply       # stage the best node's changes (squash merge — you review and commit)
+agent-mcts apply n2    # ...or pick a different branch
 ```
 
 ## How it works
@@ -70,16 +72,17 @@ agent-mcts resume      # continue searching from where you stopped
 ```
 
 - **Node = (git worktree, agent session).** Filesystem state branches via worktrees; conversation state branches via session forking (native on Claude Code, context-injection fallback elsewhere).
-- **Value function = your tests + optional LLM-as-judge**, the hybrid design validated by SWE-Search. If `pytest` or `npm test` exists, it's picked up automatically.
-- **Every node is a git branch** (`agent-mcts/run3/n5`), so "apply" is an ordinary merge and everything is auditable after the fact.
+- **Value function = your tests.** Exit 0 scores 1.0; a pytest-style summary earns partial credit by pass ratio, and the failing output is fed into children's revision prompts. `pytest` / `npm test` / `make test` are picked up automatically. (LLM-as-judge lands in v0.2.)
+- **Every node is a git branch** (`agent-mcts/<run>/<node>`), so `apply` is an ordinary squash merge and everything is auditable after the fact. Worktrees are disposable; branches are the record.
+- **Every state change is journaled** (append-only jsonl per run), so an interrupted search is still a valid, inspectable tree.
 
 ## Supported agents
 
 | Agent | Headless | Session fork | Status |
 |---|---|---|---|
-| Claude Code | `claude -p` | native (`--fork-session`) | 🚧 first target |
-| Codex CLI | `codex exec` | resume + context injection | planned |
-| Kimi CLI | `kimi -p` | context injection | planned |
+| Claude Code | `claude -p` | native (`--fork-session`) | ✅ v0.1 |
+| Codex CLI | `codex exec` | resume + context injection | planned (v0.2) |
+| Kimi CLI | `kimi -p` | context injection | planned (v0.3) |
 | Gemini CLI, OpenCode, ... | | | [adapter PRs welcome!](#contributing) |
 
 ## Configuration
@@ -88,23 +91,28 @@ Zero config required. When you need it, `.agent-mcts.toml`:
 
 ```toml
 agent = "claude"
+model = "haiku"                   # optional agent-model override
 
 [value]
-command = "pytest tests/ -x -q"   # exit code + pass rate → score
-judge = true                      # add LLM-as-judge to the value estimate
+command = "pytest tests/ -x -q"   # exit code + pass ratio → score in [0, 1]
 
 [search]
-max_nodes = 20
-max_cost_usd = 10
-c_uct = 1.4                       # exploration constant — yes, it's exposed
+max_nodes = 20                    # episode budget
+max_cost_usd = 10.0               # hard cost ceiling
+c_uct = 1.414                     # UCT exploration constant — yes, it's exposed
+root_width = 3                    # diverse first attempts under the root
+refine_width = 2                  # revision children per node
+max_depth = 3
 ```
+
+CLI flags (`-n`, `--max-cost`, `--value`, `--model`) override the file. If your `claude` binary lives somewhere unusual, point `AGENT_MCTS_CLAUDE_BIN` at it.
 
 Search hyperparameters are first-class: this is built by an MCTS researcher and meant to double as a research harness for test-time search over real software tasks.
 
 ## Roadmap
 
-- [ ] **v0.1** — Claude Code adapter, UCT engine, worktree state, test-based value fn, live TUI
-- [ ] **v0.2** — Codex CLI adapter, LLM-as-judge value fn, `resume`
+- [x] **v0.1** — Claude Code adapter, UCT engine, worktree state, test-based value fn, live TUI
+- [ ] **v0.2** — Codex CLI adapter (+ `--agent` registry), LLM-as-judge value fn, `resume`, parallel expansion
 - [ ] **v0.3** — Kimi CLI adapter, in-agent activation (`/tree` inside Claude Code via MCP)
 - [ ] **v0.4** — search-tree export + richer visualization, benchmark mode (same task, N agents, compare trees)
 
@@ -112,7 +120,7 @@ Search hyperparameters are first-class: this is built by an MCTS researcher and 
 
 This project is **open source under the MIT license** and developed fully in the open — issues, design discussions, and PRs all happen here on GitHub. Contributions are welcome from day one.
 
-The highest-impact contribution is an **agent adapter**: a few hundred lines implementing the `AgentBackend` protocol for your favorite CLI agent, with no need to touch the search core. A step-by-step adapter guide is coming with v0.1; until then, open an issue and we'll design it together.
+The highest-impact contribution is an **agent adapter**: a few hundred lines implementing the [`AgentBackend` protocol](src/agent_mcts/adapters/base.py) for your favorite CLI agent, with no need to touch the search core. Use the [Claude Code adapter](src/agent_mcts/adapters/claude_code.py) as the reference, and the fake-binary pattern in [its tests](tests/test_claude_adapter.py) to keep CI free of API calls. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup.
 
 Also welcome: bug reports, docs, benchmark tasks, and arguing with our UCT constants.
 

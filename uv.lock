@@ -4,7 +4,6 @@ requires-python = ">=3.11"
 
 [[package]]
 name = "agent-mcts"
-version = "0.1.0.dev0"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
