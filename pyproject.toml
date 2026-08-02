@@ -1,0 +1,80 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-mcts"
+version = "0.1.0.dev0"
+description = "Turn any coding agent into a tree-searching agent — an MCTS test-time search harness for Claude Code, Codex CLI, Kimi CLI, and more."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "natsu0529" }]
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+    "rich>=13.7",
+    "typer>=0.12",
+]
+keywords = [
+    "mcts",
+    "monte-carlo-tree-search",
+    "llm",
+    "agents",
+    "coding-agent",
+    "test-time-search",
+    "claude-code",
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/natsu0529/mcts-llm-agent"
+Repository = "https://github.com/natsu0529/mcts-llm-agent"
+Issues = "https://github.com/natsu0529/mcts-llm-agent/issues"
+
+[project.scripts]
+agent-mcts = "agent_mcts.cli:app"
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.390",
+    "pytest>=8.3",
+    "ruff>=0.8",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # bugbear
+    "SIM", # simplify
+    "RUF", # ruff-specific
+]
+
+[tool.pyright]
+include = ["src", "tests"]
+typeCheckingMode = "strict"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,8 +1,8 @@
-# agentree 🌳
+# agent-mcts 🌳
 
 **Turn any coding agent into a tree-searching agent.**
 
-`agentree` is an open-source (MIT) test-time search harness that wraps coding agents — Claude Code, Codex CLI, Kimi CLI — with Monte Carlo Tree Search. Instead of a single trajectory that either works or doesn't, your agent explores multiple solution branches, backtracks from dead ends, and concentrates budget on the most promising path.
+`agent-mcts` is an open-source (MIT) test-time search harness that wraps coding agents — Claude Code, Codex CLI, Kimi CLI — with Monte Carlo Tree Search. Instead of a single trajectory that either works or doesn't, your agent explores multiple solution branches, backtracks from dead ends, and concentrates budget on the most promising path.
 
 > **Status: early development (pre-alpha).** The design is settled, the code is being written in the open. Star the repo to follow along, or [jump in](#contributing) — early contributors shape the architecture.
 
@@ -12,7 +12,7 @@ Production coding agents (Claude Code, Codex, Kimi, ...) run a **single linear l
 
 Research shows search helps: [SWE-Search (ICLR 2025)](https://arxiv.org/abs/2410.20285) reported a ~23% relative improvement on SWE-bench by adding MCTS on top of software agents. But that result lives in a research framework — there is no tool that brings it to the agent you already use.
 
-`agentree` closes that gap:
+`agent-mcts` closes that gap:
 
 - **Bring your own agent.** A thin adapter layer speaks to each agent's headless mode (`claude -p`, `codex exec`, `kimi -p`). The search engine never knows which agent it's driving.
 - **Real MCTS, not best-of-N.** UCT selection, expansion, evaluation, backup. Budget flows toward branches that look promising, away from dead ends.
@@ -24,9 +24,9 @@ Research shows search helps: [SWE-Search (ICLR 2025)](https://arxiv.org/abs/2410
 > ⚠️ Not yet on PyPI — the interface below is the committed design and tracks the implementation.
 
 ```bash
-uv tool install agentree
+uv tool install agent-mcts
 cd your-project
-agentree "fix the flaky test in tests/test_auth.py"
+agent-mcts "fix the flaky test in tests/test_auth.py"
 ```
 
 First run auto-detects your installed agent and your test command, then shows the plan before spending anything:
@@ -49,10 +49,10 @@ While searching, the tree renders live:
 When it finishes (or when you Ctrl-C — MCTS is anytime):
 
 ```bash
-agentree show        # inspect the tree and per-node agent transcripts
-agentree apply       # merge the best branch into your working tree
-agentree apply n5    # ...or pick a different branch
-agentree resume      # continue searching from where you stopped
+agent-mcts show        # inspect the tree and per-node agent transcripts
+agent-mcts apply       # merge the best branch into your working tree
+agent-mcts apply n5    # ...or pick a different branch
+agent-mcts resume      # continue searching from where you stopped
 ```
 
 ## How it works
@@ -71,7 +71,7 @@ agentree resume      # continue searching from where you stopped
 
 - **Node = (git worktree, agent session).** Filesystem state branches via worktrees; conversation state branches via session forking (native on Claude Code, context-injection fallback elsewhere).
 - **Value function = your tests + optional LLM-as-judge**, the hybrid design validated by SWE-Search. If `pytest` or `npm test` exists, it's picked up automatically.
-- **Every node is a git branch** (`agentree/run3/n5`), so "apply" is an ordinary merge and everything is auditable after the fact.
+- **Every node is a git branch** (`agent-mcts/run3/n5`), so "apply" is an ordinary merge and everything is auditable after the fact.
 
 ## Supported agents
 
@@ -84,7 +84,7 @@ agentree resume      # continue searching from where you stopped
 
 ## Configuration
 
-Zero config required. When you need it, `.agentree.toml`:
+Zero config required. When you need it, `.agent-mcts.toml`:
 
 ```toml
 agent = "claude"
