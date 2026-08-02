@@ -40,6 +40,8 @@ def root_attempt_prompt(task: str, baseline_detail: str, sibling_summaries: list
         f"{baseline}{diversity}\n"
         "Work in the current directory and implement a complete solution attempt. "
         "Do not commit; leave your changes in the working tree. "
+        "You may be unable to execute commands in this session; that is fine — the "
+        "harness runs the evaluation (test suite) on your working tree after you finish. "
         "End with a 1-3 sentence summary of the approach you took."
     )
 
@@ -60,5 +62,7 @@ def revision_prompt(
         f"{feedback}{diversity}\n"
         "Revise your work in the current directory to address the problems shown in the "
         "feedback. Do not commit; leave your changes in the working tree. "
+        "You may be unable to execute commands in this session; that is fine — the "
+        "harness runs the evaluation (test suite) on your working tree after you finish. "
         "End with a 1-3 sentence summary of what you changed."
     )

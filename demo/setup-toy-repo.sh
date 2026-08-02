@@ -24,6 +24,9 @@ def test_add():
 def test_add_negative():
     assert add(-1, -2) == -3
 EOF
+cat > pytest.ini << 'EOF'
+[pytest]
+EOF
 git add -A
 git -c user.name=demo -c user.email=demo@example.com commit -qm "init"
 

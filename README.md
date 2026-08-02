@@ -4,9 +4,9 @@
 
 `agent-mcts` is an open-source (MIT) test-time search harness that wraps coding agents — Claude Code, Codex CLI, Kimi CLI — with Monte Carlo Tree Search. Instead of a single trajectory that either works or doesn't, your agent explores multiple solution branches, backtracks from dead ends, and concentrates budget on the most promising path.
 
-<!-- demo GIF goes here once recorded — see demo/demo.tape -->
+![agent-mcts searching, applying the best branch, and the resulting diff](demo/demo.gif)
 
-> **Status: v0.1 is implemented and being released.** Built in the open; star the repo to follow along, or [jump in](#contributing) — early contributors shape the architecture.
+> **Status: v0.1.** Early but real — the full loop (search → live tree → apply) works today with Claude Code. Built in the open; star the repo to follow along, or [jump in](#contributing) — early contributors shape the architecture.
 
 ## Why
 
@@ -22,8 +22,6 @@ Research shows search helps: [SWE-Search (ICLR 2025)](https://arxiv.org/abs/2410
 - **Terminal-native.** Watch the tree grow live in your terminal. 100% Python, no browser required.
 
 ## Quickstart
-
-> ⚠️ First release is in flight — if `uv tool install agent-mcts` fails, install from source: `uv tool install git+https://github.com/natsu0529/mcts-llm-agent`.
 
 ```bash
 uv tool install agent-mcts
