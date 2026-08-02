@@ -10,13 +10,12 @@ from typing import Annotated, NoReturn
 
 import typer
 from rich.console import Console
-from rich.tree import Tree as RichTree
 
-from agent_mcts import __version__, project
+from agent_mcts import __version__, project, tui
 from agent_mcts.adapters import AdapterError, ClaudeCodeAdapter
 from agent_mcts.core import journal
 from agent_mcts.core.engine import SearchEngine
-from agent_mcts.core.model import Node, NodeStatus, RunMeta, Tree
+from agent_mcts.core.model import RunMeta, Tree
 from agent_mcts.core.value import CommandValueFunction
 from agent_mcts.core.worktree import WorktreeManager
 
@@ -25,13 +24,6 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
-
-_ICON = {
-    NodeStatus.PENDING: "…",
-    NodeStatus.RUNNING: "●",
-    NodeStatus.EVALUATED: "✓",
-    NodeStatus.FAILED: "✗",
-}
 
 
 def _fail(message: str) -> NoReturn:
@@ -58,32 +50,6 @@ def main(
     ] = False,
 ) -> None:
     """agent-mcts — MCTS test-time search for coding agents."""
-
-
-class _Progress:
-    """Prints one line per node status transition (the live TUI lands with v0.1 polish)."""
-
-    def __init__(self, tree: Tree) -> None:
-        self.tree = tree
-        self._seen: dict[str, NodeStatus] = {}
-
-    def __call__(self) -> None:
-        for node in sorted(self.tree.nodes.values(), key=lambda n: int(n.id[1:])):
-            if self._seen.get(node.id) is node.status:
-                continue
-            self._seen[node.id] = node.status
-            if node.status is NodeStatus.RUNNING:
-                origin = "" if node.parent_id in (None, "n0") else f" ← revising {node.parent_id}"
-                console.print(f"[dim]●[/] {node.id} expanding…{origin}")
-            elif node.status is NodeStatus.EVALUATED:
-                reward = node.reward if node.reward is not None else 0.0
-                summary = node.summary.splitlines()[0][:70] if node.summary else "(baseline)"
-                console.print(
-                    f"[green]✓[/] {node.id} reward={reward:.2f} (${node.cost_usd:.2f}) {summary}"
-                )
-            elif node.status is NodeStatus.FAILED:
-                detail = node.eval_detail.splitlines()[0][:70] if node.eval_detail else ""
-                console.print(f"[red]✗[/] {node.id} failed {detail}")
 
 
 @app.command()
@@ -155,10 +121,12 @@ def run(
         worktrees=worktrees,
         journal_path=project.journal_path(repo, run_id),
         config=cfg.search,
-        on_change=_Progress(tree),
     )
+    view = tui.LiveSearchView(engine, console)
+    engine.on_change = view.refresh
     try:
-        asyncio.run(engine.run())
+        with view:
+            asyncio.run(engine.run())
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted[/] — the partial tree is saved and usable.")
     finally:
@@ -192,22 +160,6 @@ def _load_tree(run_id: str | None) -> Tree:
     return journal.load(path)
 
 
-def _node_label(tree: Tree, node: Node) -> str:
-    icon = _ICON[node.status]
-    best = tree.best()
-    reward = f"r={node.reward:.2f}" if node.reward is not None else "r=?"
-    summary = node.summary.splitlines()[0][:60] if node.summary else ""
-    marker = "  [bold magenta]← best[/]" if best is not None and node.id == best.id else ""
-    stats = f"{reward} Q={node.q:.2f} N={node.visits}"
-    return f"{icon} [bold]{node.id}[/] \\[{stats}] {summary}{marker}"
-
-
-def _add_children(tree: Tree, node: Node, rich_node: RichTree) -> None:
-    for child in tree.children(node.id):
-        branch = rich_node.add(_node_label(tree, child))
-        _add_children(tree, child, branch)
-
-
 @app.command()
 def show(
     node: Annotated[str | None, typer.Argument(help="Node id for details (e.g. n3).")] = None,
@@ -216,13 +168,8 @@ def show(
     """Show the search tree of a run, or one node's full details."""
     tree = _load_tree(run_id)
     if node is None:
-        root = tree.root
-        if root is None:
-            _fail("run has an empty tree")
         console.print(f"task: {tree.meta.task}  ·  run {tree.meta.run_id}")
-        rich_root = RichTree(_node_label(tree, root))
-        _add_children(tree, root, rich_root)
-        console.print(rich_root)
+        console.print(tui.render_tree(tree))
         return
     found = tree.nodes.get(node)
     if found is None:

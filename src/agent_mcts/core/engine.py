@@ -52,7 +52,7 @@ class SearchEngine:
         self.worktrees = worktrees
         self.journal_path = journal_path
         self.config = config or SearchConfig()
-        self._on_change = on_change
+        self.on_change = on_change  # reassignable: the live TUI attaches itself here
 
     @property
     def total_cost_usd(self) -> float:
@@ -192,5 +192,5 @@ class SearchEngine:
     def _journal(self, nodes: list[Node]) -> None:
         for node in nodes:
             journal.append_node(self.journal_path, node)
-        if self._on_change is not None:
-            self._on_change()
+        if self.on_change is not None:
+            self.on_change()
