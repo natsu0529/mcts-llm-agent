@@ -37,6 +37,7 @@ class Node(BaseModel):
     value_sum: float = 0.0  # MCTS W
 
     cost_usd: float = 0.0
+    cost_known: bool = True
     duration_s: float = 0.0
     created_at: datetime = Field(default_factory=_utcnow)
 
@@ -101,7 +102,11 @@ class Tree:
         Ties prefer deeper nodes: an attempt that did work beats the untouched
         baseline scoring the same (e.g. both 1.0 on an already-green suite).
         """
-        scored = [n for n in self.nodes.values() if n.reward is not None]
+        scored = [
+            n
+            for n in self.nodes.values()
+            if n.status is NodeStatus.EVALUATED and n.reward is not None
+        ]
         if not scored:
             return None
         return max(scored, key=lambda n: (n.reward or 0.0, len(self.path(n.id))))

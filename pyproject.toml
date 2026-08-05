@@ -81,3 +81,7 @@ typeCheckingMode = "strict"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# Leaked subprocess pipes surface as "Event loop is closed" from a finalizer, which
+# pytest reports as an unraisable-exception warning. That is a real bug in how we tear
+# down killed process trees, so it must fail the suite rather than scroll past.
+filterwarnings = ["error::pytest.PytestUnraisableExceptionWarning"]

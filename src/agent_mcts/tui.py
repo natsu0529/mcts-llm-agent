@@ -95,9 +95,12 @@ class LiveSearchView:
         meta = engine.tree.meta
         cfg = engine.config
         header = Text(f"task: {meta.task}", style="bold")
+        cost = f"${engine.total_cost_usd:.2f}"
+        if engine.unknown_cost_episodes:
+            cost += f" + {engine.unknown_cost_episodes} unknown"
         status = Text(
             f"run {meta.run_id} · episodes {engine.episodes}/{cfg.max_nodes} · "
-            f"cost ${engine.total_cost_usd:.2f}/${cfg.max_cost_usd:.2f}",
+            f"cost {cost}/${cfg.max_cost_usd:.2f}",
             style="dim",
         )
         return Group(header, status, render_tree(engine.tree))

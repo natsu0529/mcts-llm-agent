@@ -12,7 +12,19 @@ import subprocess
 from pathlib import Path
 
 _EXCLUDE_ENTRY = ".agent-mcts/"
-_SNAPSHOT_AUTHOR = ["-c", "user.name=agent-mcts", "-c", "user.email=noreply@agent-mcts.dev"]
+# Snapshots are internal bookkeeping, not the user's commits: they must not be blocked
+# by a repo's pre-commit hooks, GPG signing, or commit templates. A rejected snapshot
+# would take the agent's partial work down with the disposable worktree.
+_SNAPSHOT_CONFIG = [
+    "-c",
+    "user.name=agent-mcts",
+    "-c",
+    "user.email=noreply@agent-mcts.dev",
+    "-c",
+    "commit.gpgsign=false",
+    "-c",
+    "commit.template=",
+]
 
 
 class GitError(RuntimeError):
@@ -33,7 +45,13 @@ class WorktreeManager:
         self.repo_root = repo_root
         self.run_id = run_id
         self.worktrees_dir = repo_root / ".agent-mcts" / "worktrees" / run_id
+        self._preserved: dict[str, Path] = {}
         self._ensure_excluded()
+
+    @property
+    def preserved(self) -> dict[str, Path]:
+        """Node id -> worktree path for worktrees `cleanup` must not delete."""
+        return dict(self._preserved)
 
     def branch_name(self, node_id: str) -> str:
         return f"agent-mcts/{self.run_id}/{node_id}"
@@ -60,8 +78,14 @@ class WorktreeManager:
         _git(["add", "-A"], cwd=path)
         if _git(["status", "--porcelain"], cwd=path):
             msg = message or f"agent-mcts snapshot {self.run_id}/{node_id}"
-            _git([*_SNAPSHOT_AUTHOR, "commit", "-m", msg], cwd=path)
+            _git([*_SNAPSHOT_CONFIG, "commit", "--no-verify", "-m", msg], cwd=path)
         return _git(["rev-parse", "HEAD"], cwd=path)
+
+    def preserve(self, node_id: str) -> Path:
+        """Exempt a worktree from `cleanup`, so unsnapshottable work survives the run."""
+        path = self.worktree_path(node_id)
+        self._preserved[node_id] = path
+        return path
 
     def remove(self, node_id: str) -> None:
         """Remove the worktree (the node's branch survives)."""
@@ -70,9 +94,14 @@ class WorktreeManager:
         )
 
     def cleanup(self) -> None:
-        """Remove every worktree of this run; branches remain for `show`/`apply`."""
+        """Remove every worktree of this run; branches remain for `show`/`apply`.
+
+        Preserved worktrees are skipped: they hold changes that never made it into a
+        commit, so deleting them would destroy the only copy.
+        """
+        keep = {p.resolve() for p in self._preserved.values()}
         for path in sorted(self.worktrees_dir.glob("*")):
-            if path.is_dir():
+            if path.is_dir() and path.resolve() not in keep:
                 _git(["worktree", "remove", "--force", str(path)], cwd=self.repo_root)
         _git(["worktree", "prune"], cwd=self.repo_root)
 

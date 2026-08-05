@@ -15,11 +15,11 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from agent_mcts.adapters.base import AdapterError, AgentBackend
+from agent_mcts.adapters.base import AdapterError, AdapterTimeout, AgentBackend
 from agent_mcts.core import journal, prompts
 from agent_mcts.core.model import Node, NodeStatus, Tree
 from agent_mcts.core.value import ValueFunction
-from agent_mcts.core.worktree import WorktreeManager
+from agent_mcts.core.worktree import GitError, WorktreeManager
 
 
 class SearchConfig(BaseModel):
@@ -59,6 +59,10 @@ class SearchEngine:
         return sum(n.cost_usd for n in self.tree.nodes.values())
 
     @property
+    def unknown_cost_episodes(self) -> int:
+        return sum(not n.cost_known for n in self.tree.nodes.values())
+
+    @property
     def episodes(self) -> int:
         return max(0, len(self.tree.nodes) - 1)
 
@@ -86,7 +90,17 @@ class SearchEngine:
 
         self.worktrees.create(root.id)
         root.branch = self.worktrees.branch_name(root.id)
-        evaluation = await self.value_fn.evaluate(self.worktrees.worktree_path(root.id))
+        try:
+            evaluation = await self.value_fn.evaluate(self.worktrees.worktree_path(root.id))
+        except BaseException as exc:
+            # Same contract as `_expand`: a node that stops being worked on stops being
+            # RUNNING. Otherwise a Ctrl-C during the baseline leaves a finished run whose
+            # root renders as an in-flight expansion forever.
+            root.status = NodeStatus.FAILED
+            root.reward = 0.0
+            root.eval_detail = f"baseline evaluation did not finish: {type(exc).__name__}"
+            self._journal([root])
+            raise
         root.reward = evaluation.score
         root.eval_detail = evaluation.detail
         root.status = NodeStatus.EVALUATED
@@ -161,11 +175,10 @@ class SearchEngine:
             node.session_id = result.session_id
             node.summary = result.summary
             node.cost_usd = result.cost_usd
+            node.cost_known = result.cost_known
             node.duration_s = result.duration_s
             if result.is_error:
-                node.status = NodeStatus.FAILED
-                node.reward = 0.0
-                node.eval_detail = f"agent reported an error: {result.summary}"
+                self._fail_with_snapshot(node, f"agent reported an error: {result.summary}")
             else:
                 self.worktrees.commit_all(node.id)
                 node.branch = self.worktrees.branch_name(node.id)
@@ -174,19 +187,61 @@ class SearchEngine:
                 node.eval_detail = evaluation.detail
                 node.status = NodeStatus.EVALUATED
         except AdapterError as exc:
-            node.status = NodeStatus.FAILED
-            node.reward = 0.0
-            node.eval_detail = str(exc)
+            # A timed-out or crashed agent may still have produced valuable edits. Snapshot
+            # them before CLI cleanup removes the disposable worktree, while keeping the
+            # node failed so an incomplete attempt can never become the automatic best.
+            self._fail_with_snapshot(node, str(exc))
+            node.summary = "Agent failed; partial worktree state was preserved for inspection."
+            # Anything that died after the agent started may already have been billed
+            # without ever reporting the amount; the search must stop rather than run
+            # on against a cost ceiling it can no longer enforce.
+            node.cost_known = exc.cost_known
+            if isinstance(exc, AdapterTimeout):
+                node.duration_s = exc.duration_s
+        except BaseException as exc:
+            # Ctrl-C arrives here as CancelledError, and BaseException also covers the
+            # value function or a snapshot blowing up. Snapshot before unwinding, or the
+            # CLI's cleanup deletes the worktree and the interrupted episode's work with
+            # it — and leave a coherent node behind instead of a permanent RUNNING one.
+            self._fail_with_snapshot(node, f"interrupted: {type(exc).__name__}")
+            node.summary = "Search was interrupted; partial worktree state was preserved."
+            node.cost_known = False
+            self._journal([node])
+            raise
 
         updated = self.tree.backup(node.id, node.reward or 0.0)
         self._journal(updated)
         return node
 
+    def _fail_with_snapshot(self, node: Node, detail: str) -> None:
+        """Mark `node` failed and commit whatever its worktree holds onto the node branch.
+
+        A failed node never becomes the automatic best, but its partial work stays
+        inspectable. If the snapshot commit itself fails, the worktree is preserved on
+        disk instead — losing the work to cleanup would be worse than a leftover
+        directory, and the commit error must not mask the failure that got us here.
+        """
+        node.status = NodeStatus.FAILED
+        node.reward = 0.0
+        node.eval_detail = detail
+        try:
+            self.worktrees.commit_all(node.id, message=f"agent-mcts partial {node.id}")
+        except GitError as exc:
+            path = self.worktrees.preserve(node.id)
+            node.eval_detail = (
+                f"{detail}\n\ncould not snapshot the partial work to a branch ({exc}); "
+                f"the worktree was kept at {path}"
+            )
+            return
+        node.branch = self.worktrees.branch_name(node.id)
+
     # -- bookkeeping ----------------------------------------------------------
 
     def _within_budget(self) -> bool:
         return (
-            self.episodes < self.config.max_nodes and self.total_cost_usd < self.config.max_cost_usd
+            self.episodes < self.config.max_nodes
+            and self.total_cost_usd < self.config.max_cost_usd
+            and self.unknown_cost_episodes == 0
         )
 
     def _journal(self, nodes: list[Node]) -> None:

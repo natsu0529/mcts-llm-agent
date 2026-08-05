@@ -17,7 +17,7 @@ from agent_mcts.core import journal
 from agent_mcts.core.engine import SearchEngine
 from agent_mcts.core.model import RunMeta, Tree
 from agent_mcts.core.value import CommandValueFunction
-from agent_mcts.core.worktree import WorktreeManager
+from agent_mcts.core.worktree import GitError, WorktreeManager
 
 app = typer.Typer(
     help="Turn any coding agent into a tree-searching agent.",
@@ -70,6 +70,10 @@ def run(
         typer.Option("--value", help="Value command (defaults to auto-detected tests)."),
     ] = None,
     model: Annotated[str | None, typer.Option("--model", help="Agent model override.")] = None,
+    agent_timeout: Annotated[
+        float | None,
+        typer.Option("--agent-timeout", help="Maximum seconds for each agent episode."),
+    ] = None,
     yes: Annotated[bool, typer.Option("-y", "--yes", help="Skip confirmations.")] = False,
 ) -> None:
     """Search for a solution to TASK with your coding agent."""
@@ -90,8 +94,19 @@ def run(
             f"Pass --value '<command>' or set [value].command in {project.CONFIG_FILENAME}."
         )
 
+    timeout_s = agent_timeout if agent_timeout is not None else cfg.claude.timeout_s
+    if timeout_s <= 0:
+        _fail("--agent-timeout must be greater than zero")
+    # The harness is already authorized to execute the value command after every episode.
+    # Give Claude permission to run that exact command too, so headless `acceptEdits` mode
+    # does not deny the agent's own verification attempt.
+    allowed_tools = list(dict.fromkeys([f"Bash({value_command})", *cfg.claude.allowed_tools]))
     try:
-        adapter = ClaudeCodeAdapter(model=model or cfg.model)
+        adapter = ClaudeCodeAdapter(
+            model=model or cfg.model,
+            timeout_s=timeout_s,
+            allowed_tools=allowed_tools,
+        )
     except AdapterError as exc:
         _fail(str(exc))
 
@@ -102,7 +117,8 @@ def run(
         )
     console.print(
         f"Agent: [bold]{cfg.agent}[/] · Value: [bold]{value_command}[/] · "
-        f"Budget: [bold]{cfg.search.max_nodes}[/] nodes / ${cfg.search.max_cost_usd:.2f}"
+        f"Budget: [bold]{cfg.search.max_nodes}[/] nodes / ${cfg.search.max_cost_usd:.2f} · "
+        f"Timeout: {timeout_s:.0f}s/episode"
     )
     if not yes:
         typer.confirm("Proceed?", abort=True)
@@ -134,12 +150,23 @@ def run(
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted[/] — the partial tree is saved and usable.")
     finally:
-        worktrees.cleanup()
+        try:
+            worktrees.cleanup()
+        except GitError as exc:
+            console.print(f"[yellow]warning:[/] could not remove every worktree: {exc}")
+        for node_id, path in worktrees.preserved.items():
+            console.print(
+                f"[yellow]kept[/] worktree for {node_id} at {path} "
+                "— its changes could not be committed to a branch."
+            )
 
-    console.print(
-        f"\nSearch finished: {engine.episodes} episodes, "
-        f"${engine.total_cost_usd:.2f} · run {run_id}"
-    )
+    cost = f"${engine.total_cost_usd:.2f}"
+    if engine.unknown_cost_episodes:
+        cost += (
+            f" reported + {engine.unknown_cost_episodes} episode(s) with unknown cost "
+            "(cut off before the agent reported its spend)"
+        )
+    console.print(f"\nSearch finished: {engine.episodes} episodes, {cost} · run {run_id}")
     best = tree.best()
     if best is None or best.parent_id is None:
         console.print("No attempt beat the baseline. Inspect with: [bold]agent-mcts show[/]")
@@ -183,7 +210,11 @@ def show(
         ("status", status),
         ("branch", found.branch or "-"),
         ("session", found.session_id or "-"),
-        ("cost", f"${found.cost_usd:.2f} in {found.duration_s:.0f}s"),
+        (
+            "cost",
+            (f"${found.cost_usd:.2f}" if found.cost_known else "unknown")
+            + f" in {found.duration_s:.0f}s",
+        ),
         ("prompt", found.prompt or "-"),
         ("summary", found.summary or "-"),
         ("evaluation", found.eval_detail or "-"),

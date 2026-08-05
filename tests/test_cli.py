@@ -3,6 +3,7 @@
 
 import subprocess
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from typer.testing import CliRunner
@@ -19,6 +20,8 @@ class FakeAdapter:
     """Constructor-compatible stand-in for ClaudeCodeAdapter."""
 
     calls = 0
+    last_timeout_s = 0.0
+    last_allowed_tools: ClassVar[list[str]] = []
 
     def __init__(
         self,
@@ -27,8 +30,11 @@ class FakeAdapter:
         model: str | None = None,
         permission_mode: str = "acceptEdits",
         timeout_s: float = 600.0,
+        allowed_tools: list[str] | None = None,
     ) -> None:
         self.model = model
+        FakeAdapter.last_timeout_s = timeout_s
+        FakeAdapter.last_allowed_tools = allowed_tools or []
 
     @property
     def name(self) -> str:
@@ -51,6 +57,8 @@ def project_repo(repo: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(repo)
     monkeypatch.setattr(cli, "ClaudeCodeAdapter", FakeAdapter)
     FakeAdapter.calls = 0
+    FakeAdapter.last_timeout_s = 0.0
+    FakeAdapter.last_allowed_tools = []
     return repo
 
 
@@ -85,6 +93,33 @@ def test_run_end_to_end(project_repo: Path) -> None:
     ).stdout
     assert "/n1" in branches
     assert not any((project_repo / ".agent-mcts" / "worktrees").rglob("attempt.txt"))
+
+
+def test_run_configures_timeout_and_preapproves_value_command(project_repo: Path) -> None:
+    output = do_run(["--agent-timeout", "42"])
+
+    assert "Timeout: 42s/episode" in output
+    assert FakeAdapter.last_timeout_s == pytest.approx(42.0)
+    assert FakeAdapter.last_allowed_tools == [f"Bash({VALUE_CMD})"]
+
+
+def test_run_loads_claude_options_from_project_config(project_repo: Path) -> None:
+    (project_repo / ".agent-mcts.toml").write_text(
+        '[claude]\ntimeout_s = 90\nallowed_tools = ["Bash(git diff *)"]\n'
+    )
+
+    do_run()
+
+    assert FakeAdapter.last_timeout_s == pytest.approx(90.0)
+    assert FakeAdapter.last_allowed_tools == [f"Bash({VALUE_CMD})", "Bash(git diff *)"]
+
+
+def test_run_rejects_non_positive_agent_timeout(project_repo: Path) -> None:
+    result = runner.invoke(
+        cli.app, ["run", "fix the widget", "-y", "--value", VALUE_CMD, "--agent-timeout", "0"]
+    )
+    assert result.exit_code == 1
+    assert "greater than zero" in result.output
 
 
 def test_show_tree_and_node(project_repo: Path) -> None:

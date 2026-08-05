@@ -12,10 +12,12 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, cast
 
-from agent_mcts.adapters.base import AdapterError, EpisodeResult
+from agent_mcts import proctree
+from agent_mcts.adapters.base import AdapterError, AdapterTimeout, EpisodeResult
 
 ENV_BINARY_OVERRIDE = "AGENT_MCTS_CLAUDE_BIN"
 
@@ -77,11 +79,13 @@ class ClaudeCodeAdapter:
         model: str | None = None,
         permission_mode: str = "acceptEdits",
         timeout_s: float = 600.0,
+        allowed_tools: list[str] | None = None,
     ) -> None:
         self._binary = binary or find_claude_binary()
         self.model = model
         self.permission_mode = permission_mode
         self.timeout_s = timeout_s
+        self.allowed_tools = allowed_tools or []
 
     @property
     def name(self) -> str:
@@ -99,6 +103,12 @@ class ClaudeCodeAdapter:
             "-p",
             "--output-format",
             "json",
+        ]
+        if self.allowed_tools:
+            # `--allowedTools` is variadic. Put another option after its comma-separated
+            # value so Claude's argument parser does not consume the positional prompt.
+            cmd += ["--allowedTools", ",".join(self.allowed_tools)]
+        cmd += [
             "--permission-mode",
             self.permission_mode,
         ]
@@ -108,28 +118,39 @@ class ClaudeCodeAdapter:
             cmd += ["--resume", resume_session, "--fork-session"]
         cmd.append(prompt)
 
+        started = time.monotonic()
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=workdir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # Claude spawns tools of its own; the episode is only killable as a tree.
+            start_new_session=proctree.POSIX,
         )
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout_s)
         except TimeoutError:
-            proc.kill()
-            await proc.wait()
-            raise AdapterError(
-                f"claude episode timed out after {self.timeout_s:.0f}s in {workdir}"
+            await proctree.terminate_tree(proc)
+            raise AdapterTimeout(
+                f"claude episode timed out after {self.timeout_s:.0f}s in {workdir}; "
+                "partial work was snapshotted and cost is unknown",
+                duration_s=time.monotonic() - started,
             ) from None
+        except asyncio.CancelledError:
+            # Ctrl-C. Take the agent and its whole tool subtree down with us rather
+            # than orphaning processes that keep editing an abandoned worktree.
+            await proctree.terminate_tree(proc)
+            raise
 
         payload = self._parse_payload(stdout)
         if payload is None:
             detail = (
                 stderr.decode(errors="replace").strip() or stdout.decode(errors="replace").strip()
             )
+            # The process ran, so it may well have been billed before dying.
             raise AdapterError(
-                f"claude exited with code {proc.returncode} and no JSON payload: {detail[-2000:]}"
+                f"claude exited with code {proc.returncode} and no JSON payload: {detail[-2000:]}",
+                cost_known=False,
             )
         return self._to_result(payload, exit_code=proc.returncode)
 
@@ -150,14 +171,23 @@ class ClaudeCodeAdapter:
     def _to_result(payload: dict[str, Any], *, exit_code: int | None) -> EpisodeResult:
         session_id = payload.get("session_id")
         if not isinstance(session_id, str) or not session_id:
-            raise AdapterError(f"claude payload has no session_id: {str(payload)[:500]}")
+            raise AdapterError(
+                f"claude payload has no session_id: {str(payload)[:500]}", cost_known=False
+            )
         summary = payload.get("result")
-        cost = payload.get("total_cost_usd")
+        raw_cost = payload.get("total_cost_usd")
         duration_ms = payload.get("duration_ms")
+        # A payload without a usable cost is not a free episode — it is an unmeasured one.
+        cost = (
+            float(raw_cost)
+            if isinstance(raw_cost, int | float) and not isinstance(raw_cost, bool)
+            else None
+        )
         return EpisodeResult(
             session_id=session_id,
             summary=summary if isinstance(summary, str) else "",
-            cost_usd=float(cost) if isinstance(cost, int | float) else 0.0,
+            cost_usd=cost if cost is not None else 0.0,
+            cost_known=cost is not None,
             duration_s=float(duration_ms) / 1000.0 if isinstance(duration_ms, int | float) else 0.0,
             is_error=bool(payload.get("is_error")) or exit_code != 0,
             raw=payload,
