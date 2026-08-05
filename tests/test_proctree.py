@@ -40,6 +40,7 @@ def test_terminate_tree_is_bounded_when_the_kill_does_not_land(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An unkillable child must degrade to a delay, never to a hang."""
+
     def kill_nothing(_proc: asyncio.subprocess.Process) -> bool:
         return False
 
