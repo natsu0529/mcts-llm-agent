@@ -21,6 +21,18 @@ class AdapterError(RuntimeError):
     """
 
 
+class AdapterTimeout(AdapterError):
+    """An agent episode exceeded its wall-clock timeout.
+
+    Claude reports cost only in its final result payload, so a killed episode's
+    spend is unknown even though it may have done useful work in the worktree.
+    """
+
+    def __init__(self, message: str, *, duration_s: float) -> None:
+        super().__init__(message)
+        self.duration_s = duration_s
+
+
 class EpisodeResult(BaseModel):
     """Outcome of one agent episode (one node expansion)."""
 

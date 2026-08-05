@@ -51,11 +51,14 @@ def test_config_defaults_without_file(repo: Path) -> None:
 def test_config_file_overrides(repo: Path) -> None:
     (repo / project.CONFIG_FILENAME).write_text(
         'agent = "claude"\nmodel = "haiku"\n'
+        '[claude]\ntimeout_s = 1200\nallowed_tools = ["Bash(go test *)"]\n'
         '[value]\ncommand = "pytest -q"\n'
         "[search]\nmax_nodes = 5\nc_uct = 0.9\n"
     )
     cfg = project.load_project_config(repo)
     assert cfg.model == "haiku"
+    assert cfg.claude.timeout_s == pytest.approx(1200.0)
+    assert cfg.claude.allowed_tools == ["Bash(go test *)"]
     assert cfg.value.command == "pytest -q"
     assert cfg.search.max_nodes == 5
     assert cfg.search.c_uct == pytest.approx(0.9)

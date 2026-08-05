@@ -75,3 +75,11 @@ def test_best_prefers_deeper_node_on_tie() -> None:
     tree.add(Node(id="n1", parent_id="n0", reward=1.0, status=NodeStatus.EVALUATED))
     best = tree.best()
     assert best is not None and best.id == "n1"
+
+
+def test_best_ignores_failed_nodes() -> None:
+    tree = make_tree()
+    tree.add(Node(id="n0", reward=0.0, status=NodeStatus.EVALUATED))
+    tree.add(Node(id="n1", parent_id="n0", reward=0.0, status=NodeStatus.FAILED))
+    best = tree.best()
+    assert best is not None and best.id == "n0"

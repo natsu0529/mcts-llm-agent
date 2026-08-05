@@ -6,12 +6,13 @@ the root baseline.
 """
 
 import asyncio
+import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from agent_mcts.adapters.base import AdapterError, EpisodeResult
+from agent_mcts.adapters.base import AdapterError, AdapterTimeout, EpisodeResult
 from agent_mcts.core import journal
 from agent_mcts.core.engine import SearchConfig, SearchEngine
 from agent_mcts.core.model import NodeStatus, RunMeta, Tree
@@ -152,8 +153,39 @@ def test_adapter_failure_marks_node_and_continues(repo: Path) -> None:
     failed = [c for c in children if c.status is NodeStatus.FAILED]
     assert len(failed) == 1
     assert failed[0].reward == 0.0
+    assert failed[0].branch is not None  # even failed attempts retain an inspectable snapshot
     assert "infrastructure exploded" in failed[0].eval_detail
     assert len(backend.calls) == 3  # the run survived the failure
+
+
+def test_timeout_preserves_partial_work_marks_cost_unknown_and_stops(repo: Path) -> None:
+    class TimingOutBackend(FakeBackend):
+        async def run_episode(
+            self, prompt: str, workdir: Path, *, resume_session: str | None = None
+        ) -> EpisodeResult:
+            self.calls.append({"prompt": prompt, "workdir": workdir, "resume": resume_session})
+            (workdir / "partial.txt").write_text("useful unfinished work\n")
+            raise AdapterTimeout("episode timed out", duration_s=12.5)
+
+    config = SearchConfig(max_nodes=3, root_width=3)
+    tree, backend, _ = run_search(repo, [0.0], config, backend=TimingOutBackend())
+
+    root = tree.root
+    assert root is not None
+    (child,) = tree.children(root.id)
+    assert child.status is NodeStatus.FAILED
+    assert child.branch is not None
+    assert child.duration_s == pytest.approx(12.5)
+    assert not child.cost_known
+    assert len(backend.calls) == 1  # unknown spend makes the cost ceiling unenforceable
+    saved = subprocess.run(
+        ["git", "show", f"{child.branch}:partial.txt"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert saved == "useful unfinished work\n"
 
 
 def test_agent_reported_error_fails_node(repo: Path) -> None:
@@ -171,5 +203,5 @@ def test_agent_reported_error_fails_node(repo: Path) -> None:
     assert root is not None
     (child,) = tree.children(root.id)
     assert child.status is NodeStatus.FAILED
-    assert child.branch is None  # nothing was snapshotted
+    assert child.branch is not None  # error results can still contain useful partial edits
     assert root.q < 0.5  # the failure backed up as 0

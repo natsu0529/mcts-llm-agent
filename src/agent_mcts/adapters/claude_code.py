@@ -12,10 +12,11 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, cast
 
-from agent_mcts.adapters.base import AdapterError, EpisodeResult
+from agent_mcts.adapters.base import AdapterError, AdapterTimeout, EpisodeResult
 
 ENV_BINARY_OVERRIDE = "AGENT_MCTS_CLAUDE_BIN"
 
@@ -77,11 +78,13 @@ class ClaudeCodeAdapter:
         model: str | None = None,
         permission_mode: str = "acceptEdits",
         timeout_s: float = 600.0,
+        allowed_tools: list[str] | None = None,
     ) -> None:
         self._binary = binary or find_claude_binary()
         self.model = model
         self.permission_mode = permission_mode
         self.timeout_s = timeout_s
+        self.allowed_tools = allowed_tools or []
 
     @property
     def name(self) -> str:
@@ -99,6 +102,12 @@ class ClaudeCodeAdapter:
             "-p",
             "--output-format",
             "json",
+        ]
+        if self.allowed_tools:
+            # `--allowedTools` is variadic. Put another option after its comma-separated
+            # value so Claude's argument parser does not consume the positional prompt.
+            cmd += ["--allowedTools", ",".join(self.allowed_tools)]
+        cmd += [
             "--permission-mode",
             self.permission_mode,
         ]
@@ -108,6 +117,7 @@ class ClaudeCodeAdapter:
             cmd += ["--resume", resume_session, "--fork-session"]
         cmd.append(prompt)
 
+        started = time.monotonic()
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=workdir,
@@ -119,8 +129,10 @@ class ClaudeCodeAdapter:
         except TimeoutError:
             proc.kill()
             await proc.wait()
-            raise AdapterError(
-                f"claude episode timed out after {self.timeout_s:.0f}s in {workdir}"
+            raise AdapterTimeout(
+                f"claude episode timed out after {self.timeout_s:.0f}s in {workdir}; "
+                "partial work was snapshotted and cost is unknown",
+                duration_s=time.monotonic() - started,
             ) from None
 
         payload = self._parse_payload(stdout)

@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from agent_mcts.adapters.base import AdapterError
+from agent_mcts.adapters.base import AdapterError, AdapterTimeout
 from agent_mcts.adapters.claude_code import (
     ENV_BINARY_OVERRIDE,
     ClaudeCodeAdapter,
@@ -101,7 +101,9 @@ def test_run_episode_flags_and_cwd(tmp_path: Path) -> None:
     fake = make_fake_claude(tmp_path)
     workdir = tmp_path / "wt"
     workdir.mkdir()
-    adapter = ClaudeCodeAdapter(binary=str(fake), model="haiku")
+    adapter = ClaudeCodeAdapter(
+        binary=str(fake), model="haiku", allowed_tools=["Bash(pytest -q)", "Read"]
+    )
 
     run(adapter.run_episode("try again", workdir, resume_session="parent-sess"))
 
@@ -110,6 +112,7 @@ def test_run_episode_flags_and_cwd(tmp_path: Path) -> None:
     for expected in (
         "-p",
         "--output-format json",
+        "--allowedTools Bash(pytest -q),Read",
         "--permission-mode acceptEdits",
         "--model haiku",
         "--resume parent-sess --fork-session",
@@ -164,8 +167,9 @@ def test_timeout_raises(tmp_path: Path) -> None:
     workdir.mkdir()
     adapter = ClaudeCodeAdapter(binary=str(fake), timeout_s=0.3)
 
-    with pytest.raises(AdapterError, match="timed out"):
+    with pytest.raises(AdapterTimeout, match="cost is unknown") as exc_info:
         run(adapter.run_episode("fix it", workdir))
+    assert exc_info.value.duration_s >= 0.3
 
 
 def test_missing_session_id_raises(tmp_path: Path) -> None:

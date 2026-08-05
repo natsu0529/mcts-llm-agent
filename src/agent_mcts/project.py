@@ -22,11 +22,17 @@ class ValueConfig(BaseModel):
     command: str | None = None
 
 
+class ClaudeConfig(BaseModel):
+    timeout_s: float = Field(default=600.0, gt=0)
+    allowed_tools: list[str] = Field(default_factory=list)
+
+
 class ProjectConfig(BaseModel):
     """Contents of .agent-mcts.toml. Everything is optional; zero-config must work."""
 
     agent: str = "claude"
     model: str | None = None
+    claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
     value: ValueConfig = Field(default_factory=ValueConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
 

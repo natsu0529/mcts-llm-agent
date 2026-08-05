@@ -15,7 +15,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from agent_mcts.adapters.base import AdapterError, AgentBackend
+from agent_mcts.adapters.base import AdapterError, AdapterTimeout, AgentBackend
 from agent_mcts.core import journal, prompts
 from agent_mcts.core.model import Node, NodeStatus, Tree
 from agent_mcts.core.value import ValueFunction
@@ -57,6 +57,10 @@ class SearchEngine:
     @property
     def total_cost_usd(self) -> float:
         return sum(n.cost_usd for n in self.tree.nodes.values())
+
+    @property
+    def unknown_cost_episodes(self) -> int:
+        return sum(not n.cost_known for n in self.tree.nodes.values())
 
     @property
     def episodes(self) -> int:
@@ -163,6 +167,8 @@ class SearchEngine:
             node.cost_usd = result.cost_usd
             node.duration_s = result.duration_s
             if result.is_error:
+                self.worktrees.commit_all(node.id, message=f"agent-mcts partial {node.id}")
+                node.branch = self.worktrees.branch_name(node.id)
                 node.status = NodeStatus.FAILED
                 node.reward = 0.0
                 node.eval_detail = f"agent reported an error: {result.summary}"
@@ -174,9 +180,18 @@ class SearchEngine:
                 node.eval_detail = evaluation.detail
                 node.status = NodeStatus.EVALUATED
         except AdapterError as exc:
+            # A timed-out or crashed agent may still have produced valuable edits. Snapshot
+            # them before CLI cleanup removes the disposable worktree, while keeping the
+            # node failed so an incomplete attempt can never become the automatic best.
+            self.worktrees.commit_all(node.id, message=f"agent-mcts partial {node.id}")
+            node.branch = self.worktrees.branch_name(node.id)
             node.status = NodeStatus.FAILED
             node.reward = 0.0
             node.eval_detail = str(exc)
+            node.summary = "Agent failed; partial worktree state was preserved for inspection."
+            if isinstance(exc, AdapterTimeout):
+                node.duration_s = exc.duration_s
+                node.cost_known = False
 
         updated = self.tree.backup(node.id, node.reward or 0.0)
         self._journal(updated)
@@ -186,7 +201,9 @@ class SearchEngine:
 
     def _within_budget(self) -> bool:
         return (
-            self.episodes < self.config.max_nodes and self.total_cost_usd < self.config.max_cost_usd
+            self.episodes < self.config.max_nodes
+            and self.total_cost_usd < self.config.max_cost_usd
+            and self.unknown_cost_episodes == 0
         )
 
     def _journal(self, nodes: list[Node]) -> None:

@@ -93,3 +93,22 @@ def test_live_view_prints_header_and_tree() -> None:
     assert "episodes 1/5" in out
     assert "$0.00/$2.00" in out
     assert "n1" in out
+
+
+def test_live_view_marks_unknown_episode_cost() -> None:
+    tree = make_tree()
+    tree.nodes["n1"].cost_known = False
+    engine = SearchEngine(
+        tree=tree,
+        adapter=NullAdapter(),  # type: ignore[arg-type]  # never called: we only render
+        value_fn=None,  # type: ignore[arg-type]
+        worktrees=None,  # type: ignore[arg-type]
+        journal_path=Path("/dev/null"),
+        config=SearchConfig(max_cost_usd=2.0),
+    )
+    console = Console(file=io.StringIO(), width=120)
+    with LiveSearchView(engine, console) as view:
+        view.refresh()
+    file = console.file
+    assert isinstance(file, io.StringIO)
+    assert "$0.00 + 1 unknown/$2.00" in file.getvalue()
