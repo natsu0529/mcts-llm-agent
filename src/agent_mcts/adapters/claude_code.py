@@ -8,25 +8,18 @@ which works from any cwd and at any depth.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 import shutil
-import signal
 import subprocess
 import time
 from pathlib import Path
 from typing import Any, cast
 
+from agent_mcts import proctree
 from agent_mcts.adapters.base import AdapterError, AdapterTimeout, EpisodeResult
 
 ENV_BINARY_OVERRIDE = "AGENT_MCTS_CLAUDE_BIN"
-
-_POSIX = os.name == "posix"
-# How long to wait for a killed process group to actually be reaped before giving up
-# on it. SIGKILL is not refusable, so this only ever elapses for unkillable states
-# (uninterruptible IO); we would rather report the timeout than hang the search.
-_REAP_GRACE_S = 5.0
 
 
 def _executes(binary: Path) -> bool:
@@ -131,15 +124,13 @@ class ClaudeCodeAdapter:
             cwd=workdir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            # Own process group: Claude spawns tools of its own, and killing only the
-            # parent leaves those children holding the stdout/stderr pipes, so the wait
-            # that follows would block until *they* exit. See `_terminate_tree`.
-            start_new_session=_POSIX,
+            # Claude spawns tools of its own; the episode is only killable as a tree.
+            start_new_session=proctree.POSIX,
         )
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout_s)
         except TimeoutError:
-            await self._terminate_tree(proc)
+            await proctree.terminate_tree(proc)
             raise AdapterTimeout(
                 f"claude episode timed out after {self.timeout_s:.0f}s in {workdir}; "
                 "partial work was snapshotted and cost is unknown",
@@ -148,7 +139,7 @@ class ClaudeCodeAdapter:
         except asyncio.CancelledError:
             # Ctrl-C. Take the agent and its whole tool subtree down with us rather
             # than orphaning processes that keep editing an abandoned worktree.
-            await self._terminate_tree(proc)
+            await proctree.terminate_tree(proc)
             raise
 
         payload = self._parse_payload(stdout)
@@ -162,21 +153,6 @@ class ClaudeCodeAdapter:
                 cost_known=False,
             )
         return self._to_result(payload, exit_code=proc.returncode)
-
-    @staticmethod
-    async def _terminate_tree(proc: asyncio.subprocess.Process) -> None:
-        """Kill the episode's entire process group and reap it, bounded by a grace period."""
-        if proc.returncode is None:
-            killed = False
-            if _POSIX:
-                with contextlib.suppress(OSError):
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                    killed = True
-            if not killed:
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(proc.wait(), timeout=_REAP_GRACE_S)
 
     @staticmethod
     def _parse_payload(stdout: bytes) -> dict[str, Any] | None:

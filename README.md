@@ -111,7 +111,9 @@ CLI flags (`-n`, `--max-cost`, `--value`, `--model`, `--agent-timeout`) override
 
 If an episode times out, the agent process fails, or you hit Ctrl-C mid-episode, agent-mcts snapshots any partial changes onto that node's branch before cleaning up its worktree. The node remains failed and is never selected automatically, but you can inspect it with `agent-mcts show <node>` and explicitly recover it with `agent-mcts apply <node>`. These snapshots run with `--no-verify` and signing disabled so a repo's commit hooks cannot reject them; in the rare case a snapshot still fails, the worktree is left on disk and its path is printed instead of being deleted.
 
-Claude only reports cost in its final JSON payload, so any episode cut off before that payload arrives — a timeout, a crash, unparseable output, Ctrl-C — is shown with unknown rather than zero cost, and the search stops rather than claiming that subsequent calls still fit the cost ceiling. `--agent-timeout` bounds the whole episode: each agent runs in its own process group, which is terminated as a unit, so tool subprocesses cannot extend it.
+Claude only reports cost in its final JSON payload, so any episode cut off before that payload arrives — a timeout, a crash, unparseable output, Ctrl-C — is shown with unknown rather than zero cost, and the search stops rather than claiming that subsequent calls still fit the cost ceiling.
+
+Both the agent and the value command are killed as whole process trees (POSIX process groups; `taskkill /F /T` on Windows), so `--agent-timeout` and the value-command timeout bound the real wall clock even when a subprocess outlives its parent, and Ctrl-C does not leave a test suite running against a worktree that is about to be deleted.
 
 > **Python projects managed with uv:** the value command runs inside fresh worktrees, which don't inherit your virtualenv — use `command = "uv run pytest -q"` (or pass `--value "uv run pytest -q"`) so each worktree resolves its own environment.
 

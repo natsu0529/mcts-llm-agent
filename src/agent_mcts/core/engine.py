@@ -90,7 +90,17 @@ class SearchEngine:
 
         self.worktrees.create(root.id)
         root.branch = self.worktrees.branch_name(root.id)
-        evaluation = await self.value_fn.evaluate(self.worktrees.worktree_path(root.id))
+        try:
+            evaluation = await self.value_fn.evaluate(self.worktrees.worktree_path(root.id))
+        except BaseException as exc:
+            # Same contract as `_expand`: a node that stops being worked on stops being
+            # RUNNING. Otherwise a Ctrl-C during the baseline leaves a finished run whose
+            # root renders as an in-flight expansion forever.
+            root.status = NodeStatus.FAILED
+            root.reward = 0.0
+            root.eval_detail = f"baseline evaluation did not finish: {type(exc).__name__}"
+            self._journal([root])
+            raise
         root.reward = evaluation.score
         root.eval_detail = evaluation.detail
         root.status = NodeStatus.EVALUATED

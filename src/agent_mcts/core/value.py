@@ -13,6 +13,8 @@ from typing import Protocol
 
 from pydantic import BaseModel
 
+from agent_mcts import proctree
+
 
 class Evaluation(BaseModel):
     score: float  # in [0, 1]
@@ -59,16 +61,23 @@ class CommandValueFunction:
             cwd=workdir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            # A test command is a process tree too — runners fork workers, suites start
+            # servers. Killing only the shell leaves those running against a worktree
+            # that is about to be deleted, and holding the pipe we are reading.
+            start_new_session=proctree.POSIX,
         )
         try:
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=self.timeout_s)
         except TimeoutError:
-            proc.kill()
-            await proc.wait()
+            await proctree.terminate_tree(proc)
             return Evaluation(
                 score=0.0,
                 detail=f"value command timed out after {self.timeout_s:.0f}s: {self.command}",
             )
+        except asyncio.CancelledError:
+            # Ctrl-C: the run is over, so the test suite has no business continuing.
+            await proctree.terminate_tree(proc)
+            raise
         output = stdout.decode(errors="replace")
         detail = output[-_DETAIL_TAIL_CHARS:]
         if proc.returncode == 0:

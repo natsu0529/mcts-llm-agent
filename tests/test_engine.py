@@ -305,6 +305,37 @@ def test_interrupt_preserves_partial_work(repo: Path) -> None:
     assert journal.load(journal_path).nodes[child.id].branch == child.branch
 
 
+def test_interrupt_during_baseline_leaves_no_running_root(repo: Path) -> None:
+    """Ctrl-C during the very first evaluation must still close the root out.
+
+    A RUNNING node is how the TUI marks an expansion that is in flight; leaving one
+    behind makes a long-dead run render as "expanding…" forever in `agent-mcts show`.
+    """
+
+    class CancellingValue:
+        async def evaluate(self, workdir: Path) -> Evaluation:
+            raise asyncio.CancelledError
+
+    journal_path = repo / ".agent-mcts" / "runs" / "r1" / "tree.jsonl"
+    engine = SearchEngine(
+        tree=Tree(RunMeta(run_id="r1", task="t", repo_root=str(repo))),
+        adapter=FakeBackend(),
+        value_fn=CancellingValue(),
+        worktrees=WorktreeManager(repo, "r1"),
+        journal_path=journal_path,
+        config=SearchConfig(max_nodes=3, root_width=3),
+    )
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(engine.run())
+
+    root = engine.tree.root
+    assert root is not None
+    assert root.status is NodeStatus.FAILED
+    assert "baseline evaluation did not finish" in root.eval_detail
+    # ...and the journal on disk agrees, so `show` after the process dies agrees too.
+    assert journal.load(journal_path).nodes[root.id].status is NodeStatus.FAILED
+
+
 def test_snapshot_commit_failure_keeps_the_worktree(repo: Path) -> None:
     """A repo hook must not be able to delete the rescue snapshot it just rejected.
 
