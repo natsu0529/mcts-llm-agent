@@ -7,7 +7,7 @@ import subprocess
 import tomllib
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from agent_mcts.core.engine import SearchConfig
 
@@ -73,7 +73,19 @@ def load_project_config(repo: Path) -> ProjectConfig:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as exc:
         raise ProjectError(f"could not parse {CONFIG_FILENAME}: {exc}") from exc
-    return ProjectConfig.model_validate(data)
+    try:
+        return ProjectConfig.model_validate(data)
+    except ValidationError as exc:
+        raise ProjectError(f"invalid {CONFIG_FILENAME}:\n{_format_errors(exc)}") from exc
+
+
+def _format_errors(exc: ValidationError) -> str:
+    """Render pydantic's errors as `  key: reason` lines — a traceback is not a UI."""
+    lines: list[str] = []
+    for err in exc.errors():
+        location = ".".join(str(part) for part in err["loc"]) or CONFIG_FILENAME
+        lines.append(f"  {location}: {err['msg']}")
+    return "\n".join(lines)
 
 
 def detect_value_command(repo: Path) -> str | None:

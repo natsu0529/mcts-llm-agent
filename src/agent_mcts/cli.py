@@ -17,7 +17,7 @@ from agent_mcts.core import journal
 from agent_mcts.core.engine import SearchEngine
 from agent_mcts.core.model import RunMeta, Tree
 from agent_mcts.core.value import CommandValueFunction
-from agent_mcts.core.worktree import WorktreeManager
+from agent_mcts.core.worktree import GitError, WorktreeManager
 
 app = typer.Typer(
     help="Turn any coding agent into a tree-searching agent.",
@@ -150,11 +150,22 @@ def run(
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted[/] — the partial tree is saved and usable.")
     finally:
-        worktrees.cleanup()
+        try:
+            worktrees.cleanup()
+        except GitError as exc:
+            console.print(f"[yellow]warning:[/] could not remove every worktree: {exc}")
+        for node_id, path in worktrees.preserved.items():
+            console.print(
+                f"[yellow]kept[/] worktree for {node_id} at {path} "
+                "— its changes could not be committed to a branch."
+            )
 
     cost = f"${engine.total_cost_usd:.2f}"
     if engine.unknown_cost_episodes:
-        cost += f" reported + {engine.unknown_cost_episodes} timed-out episode(s) with unknown cost"
+        cost += (
+            f" reported + {engine.unknown_cost_episodes} episode(s) with unknown cost "
+            "(cut off before the agent reported its spend)"
+        )
     console.print(f"\nSearch finished: {engine.episodes} episodes, {cost} · run {run_id}")
     best = tree.best()
     if best is None or best.parent_id is None:

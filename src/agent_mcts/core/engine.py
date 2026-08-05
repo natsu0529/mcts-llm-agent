@@ -19,7 +19,7 @@ from agent_mcts.adapters.base import AdapterError, AdapterTimeout, AgentBackend
 from agent_mcts.core import journal, prompts
 from agent_mcts.core.model import Node, NodeStatus, Tree
 from agent_mcts.core.value import ValueFunction
-from agent_mcts.core.worktree import WorktreeManager
+from agent_mcts.core.worktree import GitError, WorktreeManager
 
 
 class SearchConfig(BaseModel):
@@ -165,13 +165,10 @@ class SearchEngine:
             node.session_id = result.session_id
             node.summary = result.summary
             node.cost_usd = result.cost_usd
+            node.cost_known = result.cost_known
             node.duration_s = result.duration_s
             if result.is_error:
-                self.worktrees.commit_all(node.id, message=f"agent-mcts partial {node.id}")
-                node.branch = self.worktrees.branch_name(node.id)
-                node.status = NodeStatus.FAILED
-                node.reward = 0.0
-                node.eval_detail = f"agent reported an error: {result.summary}"
+                self._fail_with_snapshot(node, f"agent reported an error: {result.summary}")
             else:
                 self.worktrees.commit_all(node.id)
                 node.branch = self.worktrees.branch_name(node.id)
@@ -183,19 +180,50 @@ class SearchEngine:
             # A timed-out or crashed agent may still have produced valuable edits. Snapshot
             # them before CLI cleanup removes the disposable worktree, while keeping the
             # node failed so an incomplete attempt can never become the automatic best.
-            self.worktrees.commit_all(node.id, message=f"agent-mcts partial {node.id}")
-            node.branch = self.worktrees.branch_name(node.id)
-            node.status = NodeStatus.FAILED
-            node.reward = 0.0
-            node.eval_detail = str(exc)
+            self._fail_with_snapshot(node, str(exc))
             node.summary = "Agent failed; partial worktree state was preserved for inspection."
+            # Anything that died after the agent started may already have been billed
+            # without ever reporting the amount; the search must stop rather than run
+            # on against a cost ceiling it can no longer enforce.
+            node.cost_known = exc.cost_known
             if isinstance(exc, AdapterTimeout):
                 node.duration_s = exc.duration_s
-                node.cost_known = False
+        except BaseException as exc:
+            # Ctrl-C arrives here as CancelledError, and BaseException also covers the
+            # value function or a snapshot blowing up. Snapshot before unwinding, or the
+            # CLI's cleanup deletes the worktree and the interrupted episode's work with
+            # it — and leave a coherent node behind instead of a permanent RUNNING one.
+            self._fail_with_snapshot(node, f"interrupted: {type(exc).__name__}")
+            node.summary = "Search was interrupted; partial worktree state was preserved."
+            node.cost_known = False
+            self._journal([node])
+            raise
 
         updated = self.tree.backup(node.id, node.reward or 0.0)
         self._journal(updated)
         return node
+
+    def _fail_with_snapshot(self, node: Node, detail: str) -> None:
+        """Mark `node` failed and commit whatever its worktree holds onto the node branch.
+
+        A failed node never becomes the automatic best, but its partial work stays
+        inspectable. If the snapshot commit itself fails, the worktree is preserved on
+        disk instead — losing the work to cleanup would be worse than a leftover
+        directory, and the commit error must not mask the failure that got us here.
+        """
+        node.status = NodeStatus.FAILED
+        node.reward = 0.0
+        node.eval_detail = detail
+        try:
+            self.worktrees.commit_all(node.id, message=f"agent-mcts partial {node.id}")
+        except GitError as exc:
+            path = self.worktrees.preserve(node.id)
+            node.eval_detail = (
+                f"{detail}\n\ncould not snapshot the partial work to a branch ({exc}); "
+                f"the worktree was kept at {path}"
+            )
+            return
+        node.branch = self.worktrees.branch_name(node.id)
 
     # -- bookkeeping ----------------------------------------------------------
 

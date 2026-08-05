@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import stat
+import time
 from pathlib import Path
 from typing import Any
 
@@ -170,6 +171,60 @@ def test_timeout_raises(tmp_path: Path) -> None:
     with pytest.raises(AdapterTimeout, match="cost is unknown") as exc_info:
         run(adapter.run_episode("fix it", workdir))
     assert exc_info.value.duration_s >= 0.3
+    assert not exc_info.value.cost_known
+
+
+def test_timeout_does_not_wait_for_children_holding_the_pipes(tmp_path: Path) -> None:
+    """The timeout must bound the *episode*, not just the parent process.
+
+    Claude spawns tool subprocesses that inherit its stdout/stderr. Killing only the
+    parent leaves those children holding the pipe open, so the read that follows blocks
+    until they exit on their own — an unbounded wait wearing a timeout's clothes.
+    """
+    script = tmp_path / "claude"
+    script.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "9.9.9"; exit 0; fi\n'
+        "sleep 30 &\n"  # a long-lived child that inherits our stdout/stderr
+        "sleep 30\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    workdir = tmp_path / "wt"
+    workdir.mkdir()
+    adapter = ClaudeCodeAdapter(binary=str(script), timeout_s=0.5)
+
+    with pytest.raises(AdapterTimeout) as exc_info:
+        run(adapter.run_episode("fix it", workdir))
+
+    assert exc_info.value.duration_s < 5.0
+
+
+def test_cancellation_kills_the_agent(tmp_path: Path) -> None:
+    """Ctrl-C must not orphan an agent that keeps editing an abandoned worktree."""
+    marker = tmp_path / "still_running.txt"
+    script = tmp_path / "claude"
+    script.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "9.9.9"; exit 0; fi\n'
+        "sleep 3\n"
+        f"echo survived > {marker}\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    workdir = tmp_path / "wt"
+    workdir.mkdir()
+    adapter = ClaudeCodeAdapter(binary=str(script), timeout_s=30.0)
+
+    async def cancel_mid_episode() -> None:
+        task = asyncio.ensure_future(adapter.run_episode("fix it", workdir))
+        await asyncio.sleep(0.4)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    run(cancel_mid_episode())
+
+    time.sleep(3.2)  # past when the un-killed agent would have written its marker
+    assert not marker.exists()
 
 
 def test_missing_session_id_raises(tmp_path: Path) -> None:
@@ -179,8 +234,59 @@ def test_missing_session_id_raises(tmp_path: Path) -> None:
     workdir.mkdir()
     adapter = ClaudeCodeAdapter(binary=str(fake))
 
-    with pytest.raises(AdapterError, match="session_id"):
+    with pytest.raises(AdapterError, match="session_id") as exc_info:
         run(adapter.run_episode("fix it", workdir))
+    # It got far enough to answer, so it got far enough to be billed.
+    assert not exc_info.value.cost_known
+
+
+def test_post_launch_failures_report_unknown_cost(tmp_path: Path) -> None:
+    """Anything that runs can be billed; only the cost *report* is lost with the payload."""
+    script = tmp_path / "claude"
+    script.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "9.9.9"; exit 0; fi\n'
+        'echo "not json at all"\nexit 1\n'
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    workdir = tmp_path / "wt"
+    workdir.mkdir()
+    adapter = ClaudeCodeAdapter(binary=str(script))
+
+    with pytest.raises(AdapterError, match="no JSON payload") as exc_info:
+        run(adapter.run_episode("fix it", workdir))
+    assert not exc_info.value.cost_known
+
+
+def test_missing_binary_error_is_free(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Nothing ran, so nothing was spent — this failure must not stall the search."""
+    monkeypatch.delenv(ENV_BINARY_OVERRIDE, raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    monkeypatch.setenv("HOME", str(tmp_path / "nohome"))
+    with pytest.raises(AdapterError) as exc_info:
+        find_claude_binary()
+    assert exc_info.value.cost_known
+
+
+def test_payload_without_cost_is_unknown_not_free(tmp_path: Path) -> None:
+    payload = {k: v for k, v in PAYLOAD.items() if k != "total_cost_usd"}
+    fake = make_fake_claude(tmp_path, payload)
+    workdir = tmp_path / "wt"
+    workdir.mkdir()
+    adapter = ClaudeCodeAdapter(binary=str(fake))
+
+    result = run(adapter.run_episode("fix it", workdir))
+    assert result.cost_usd == 0.0
+    assert not result.cost_known
+
+
+def test_payload_with_cost_is_known(tmp_path: Path) -> None:
+    fake = make_fake_claude(tmp_path)
+    workdir = tmp_path / "wt"
+    workdir.mkdir()
+    adapter = ClaudeCodeAdapter(binary=str(fake))
+
+    assert run(adapter.run_episode("fix it", workdir)).cost_known
 
 
 def test_conforms_to_protocol(tmp_path: Path) -> None:

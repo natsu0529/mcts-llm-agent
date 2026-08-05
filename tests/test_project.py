@@ -71,6 +71,23 @@ def test_config_invalid_toml(repo: Path) -> None:
         project.load_project_config(repo)
 
 
+def test_config_invalid_value_is_an_error_not_a_traceback(repo: Path) -> None:
+    """Well-formed TOML with an out-of-range value still has to fail politely."""
+    (repo / project.CONFIG_FILENAME).write_text("[claude]\ntimeout_s = 0\n")
+    with pytest.raises(project.ProjectError) as exc_info:
+        project.load_project_config(repo)
+    message = str(exc_info.value)
+    assert project.CONFIG_FILENAME in message
+    assert "claude.timeout_s" in message
+    assert "greater than 0" in message
+
+
+def test_config_wrong_type_names_the_key(repo: Path) -> None:
+    (repo / project.CONFIG_FILENAME).write_text('[search]\nmax_nodes = "lots"\n')
+    with pytest.raises(project.ProjectError, match=r"search\.max_nodes"):
+        project.load_project_config(repo)
+
+
 def test_latest_run_id(repo: Path) -> None:
     assert project.latest_run_id(repo) is None
     for run_id in ("20260801-120000", "20260802-090000"):

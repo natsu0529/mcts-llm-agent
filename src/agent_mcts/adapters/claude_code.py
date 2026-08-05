@@ -8,9 +8,11 @@ which works from any cwd and at any depth.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -19,6 +21,12 @@ from typing import Any, cast
 from agent_mcts.adapters.base import AdapterError, AdapterTimeout, EpisodeResult
 
 ENV_BINARY_OVERRIDE = "AGENT_MCTS_CLAUDE_BIN"
+
+_POSIX = os.name == "posix"
+# How long to wait for a killed process group to actually be reaped before giving up
+# on it. SIGKILL is not refusable, so this only ever elapses for unkillable states
+# (uninterruptible IO); we would rather report the timeout than hang the search.
+_REAP_GRACE_S = 5.0
 
 
 def _executes(binary: Path) -> bool:
@@ -123,27 +131,52 @@ class ClaudeCodeAdapter:
             cwd=workdir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # Own process group: Claude spawns tools of its own, and killing only the
+            # parent leaves those children holding the stdout/stderr pipes, so the wait
+            # that follows would block until *they* exit. See `_terminate_tree`.
+            start_new_session=_POSIX,
         )
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout_s)
         except TimeoutError:
-            proc.kill()
-            await proc.wait()
+            await self._terminate_tree(proc)
             raise AdapterTimeout(
                 f"claude episode timed out after {self.timeout_s:.0f}s in {workdir}; "
                 "partial work was snapshotted and cost is unknown",
                 duration_s=time.monotonic() - started,
             ) from None
+        except asyncio.CancelledError:
+            # Ctrl-C. Take the agent and its whole tool subtree down with us rather
+            # than orphaning processes that keep editing an abandoned worktree.
+            await self._terminate_tree(proc)
+            raise
 
         payload = self._parse_payload(stdout)
         if payload is None:
             detail = (
                 stderr.decode(errors="replace").strip() or stdout.decode(errors="replace").strip()
             )
+            # The process ran, so it may well have been billed before dying.
             raise AdapterError(
-                f"claude exited with code {proc.returncode} and no JSON payload: {detail[-2000:]}"
+                f"claude exited with code {proc.returncode} and no JSON payload: {detail[-2000:]}",
+                cost_known=False,
             )
         return self._to_result(payload, exit_code=proc.returncode)
+
+    @staticmethod
+    async def _terminate_tree(proc: asyncio.subprocess.Process) -> None:
+        """Kill the episode's entire process group and reap it, bounded by a grace period."""
+        if proc.returncode is None:
+            killed = False
+            if _POSIX:
+                with contextlib.suppress(OSError):
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    killed = True
+            if not killed:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(proc.wait(), timeout=_REAP_GRACE_S)
 
     @staticmethod
     def _parse_payload(stdout: bytes) -> dict[str, Any] | None:
@@ -162,14 +195,23 @@ class ClaudeCodeAdapter:
     def _to_result(payload: dict[str, Any], *, exit_code: int | None) -> EpisodeResult:
         session_id = payload.get("session_id")
         if not isinstance(session_id, str) or not session_id:
-            raise AdapterError(f"claude payload has no session_id: {str(payload)[:500]}")
+            raise AdapterError(
+                f"claude payload has no session_id: {str(payload)[:500]}", cost_known=False
+            )
         summary = payload.get("result")
-        cost = payload.get("total_cost_usd")
+        raw_cost = payload.get("total_cost_usd")
         duration_ms = payload.get("duration_ms")
+        # A payload without a usable cost is not a free episode — it is an unmeasured one.
+        cost = (
+            float(raw_cost)
+            if isinstance(raw_cost, int | float) and not isinstance(raw_cost, bool)
+            else None
+        )
         return EpisodeResult(
             session_id=session_id,
             summary=summary if isinstance(summary, str) else "",
-            cost_usd=float(cost) if isinstance(cost, int | float) else 0.0,
+            cost_usd=cost if cost is not None else 0.0,
+            cost_known=cost is not None,
             duration_s=float(duration_ms) / 1000.0 if isinstance(duration_ms, int | float) else 0.0,
             is_error=bool(payload.get("is_error")) or exit_code != 0,
             raw=payload,

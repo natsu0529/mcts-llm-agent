@@ -18,7 +18,17 @@ class AdapterError(RuntimeError):
     Distinct from the *agent* reporting an error, which is a valid episode
     result (`EpisodeResult.is_error`) — the engine scores those branches low
     instead of crashing the run.
+
+    `cost_known` is False whenever the failure happened *after* the agent
+    process started: spend is billed as the episode runs but is only reported
+    in the final payload, so any failure that loses that payload also loses the
+    number. Failures that precede execution (no binary, bad arguments) cost
+    nothing and keep the default True.
     """
+
+    def __init__(self, message: str, *, cost_known: bool = True) -> None:
+        super().__init__(message)
+        self.cost_known = cost_known
 
 
 class AdapterTimeout(AdapterError):
@@ -29,7 +39,7 @@ class AdapterTimeout(AdapterError):
     """
 
     def __init__(self, message: str, *, duration_s: float) -> None:
-        super().__init__(message)
+        super().__init__(message, cost_known=False)
         self.duration_s = duration_s
 
 
@@ -39,6 +49,7 @@ class EpisodeResult(BaseModel):
     session_id: str
     summary: str  # the agent's final message
     cost_usd: float = 0.0
+    cost_known: bool = True  # False when the payload carried no usable cost figure
     duration_s: float = 0.0
     is_error: bool = False
     raw: dict[str, Any] = Field(default_factory=dict)  # full agent-native payload
