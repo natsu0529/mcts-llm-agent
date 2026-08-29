@@ -12,7 +12,7 @@ import typer
 from rich.console import Console
 
 from agent_mcts import __version__, project, tui, update_check
-from agent_mcts.adapters import AdapterError, ClaudeCodeAdapter
+from agent_mcts.adapters import AdapterError, AgentBackend, ClaudeCodeAdapter, CodexCliAdapter
 from agent_mcts.core import journal
 from agent_mcts.core.engine import SearchEngine
 from agent_mcts.core.model import RunMeta, Tree
@@ -25,6 +25,8 @@ app = typer.Typer(
 )
 console = Console()
 
+SUPPORTED_AGENTS = ("claude", "codex")
+
 
 def _fail(message: str) -> NoReturn:
     console.print(f"[red]error:[/] {message}")
@@ -35,6 +37,24 @@ def _version_callback(value: bool) -> None:
     if value:
         typer.echo(f"agent-mcts {__version__}")
         raise typer.Exit()
+
+
+def _build_adapter(
+    agent_name: str, *, cfg: project.ProjectConfig, model: str | None, timeout_s: float
+) -> AgentBackend:
+    if agent_name == "claude":
+        value_command = cfg.value.command
+        allowed_tools = list(dict.fromkeys([f"Bash({value_command})"] if value_command else []))
+        allowed_tools.extend(tool for tool in cfg.claude.allowed_tools if tool not in allowed_tools)
+        return ClaudeCodeAdapter(
+            model=model or cfg.model,
+            timeout_s=timeout_s,
+            allowed_tools=allowed_tools,
+        )
+    if agent_name == "codex":
+        return CodexCliAdapter(model=model or cfg.model, timeout_s=timeout_s)
+    supported = ", ".join(SUPPORTED_AGENTS)
+    raise AdapterError(f"unsupported agent `{agent_name}`. Choose one of: {supported}")
 
 
 @app.callback()
@@ -70,6 +90,10 @@ def run(
         typer.Option("--value", help="Value command (defaults to auto-detected tests)."),
     ] = None,
     model: Annotated[str | None, typer.Option("--model", help="Agent model override.")] = None,
+    agent: Annotated[
+        str | None,
+        typer.Option("--agent", help="Agent backend to use: claude or codex."),
+    ] = None,
     agent_timeout: Annotated[
         float | None,
         typer.Option("--agent-timeout", help="Maximum seconds for each agent episode."),
@@ -93,20 +117,14 @@ def run(
             "could not detect a test command to use as the value function. "
             f"Pass --value '<command>' or set [value].command in {project.CONFIG_FILENAME}."
         )
+    cfg.value.command = value_command
 
     timeout_s = agent_timeout if agent_timeout is not None else cfg.claude.timeout_s
     if timeout_s <= 0:
         _fail("--agent-timeout must be greater than zero")
-    # The harness is already authorized to execute the value command after every episode.
-    # Give Claude permission to run that exact command too, so headless `acceptEdits` mode
-    # does not deny the agent's own verification attempt.
-    allowed_tools = list(dict.fromkeys([f"Bash({value_command})", *cfg.claude.allowed_tools]))
+    agent_name = agent or cfg.agent
     try:
-        adapter = ClaudeCodeAdapter(
-            model=model or cfg.model,
-            timeout_s=timeout_s,
-            allowed_tools=allowed_tools,
-        )
+        adapter = _build_adapter(agent_name, cfg=cfg, model=model, timeout_s=timeout_s)
     except AdapterError as exc:
         _fail(str(exc))
 
@@ -116,7 +134,7 @@ def run(
             "from HEAD and will not see them."
         )
     console.print(
-        f"Agent: [bold]{cfg.agent}[/] · Value: [bold]{value_command}[/] · "
+        f"Agent: [bold]{agent_name}[/] · Value: [bold]{value_command}[/] · "
         f"Budget: [bold]{cfg.search.max_nodes}[/] nodes / ${cfg.search.max_cost_usd:.2f} · "
         f"Timeout: {timeout_s:.0f}s/episode"
     )
@@ -128,7 +146,7 @@ def run(
         RunMeta(
             run_id=run_id,
             task=task,
-            agent=cfg.agent,
+            agent=agent_name,
             repo_root=str(repo),
             base_commit=project.head_commit(repo),
         )

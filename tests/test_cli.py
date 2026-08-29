@@ -52,10 +52,17 @@ class FakeAdapter:
         )
 
 
+class FakeCodexAdapter(FakeAdapter):
+    @property
+    def name(self) -> str:
+        return "codex"
+
+
 @pytest.fixture
 def project_repo(repo: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(repo)
     monkeypatch.setattr(cli, "ClaudeCodeAdapter", FakeAdapter)
+    monkeypatch.setattr(cli, "CodexCliAdapter", FakeCodexAdapter)
     FakeAdapter.calls = 0
     FakeAdapter.last_timeout_s = 0.0
     FakeAdapter.last_allowed_tools = []
@@ -112,6 +119,22 @@ def test_run_loads_claude_options_from_project_config(project_repo: Path) -> Non
 
     assert FakeAdapter.last_timeout_s == pytest.approx(90.0)
     assert FakeAdapter.last_allowed_tools == [f"Bash({VALUE_CMD})", "Bash(git diff *)"]
+
+
+def test_run_selects_codex_agent(project_repo: Path) -> None:
+    output = do_run(["--agent", "codex", "--agent-timeout", "42"])
+
+    assert "Agent: codex" in output
+    assert FakeAdapter.last_timeout_s == pytest.approx(42.0)
+    assert FakeAdapter.last_allowed_tools == []
+
+
+def test_run_rejects_unknown_agent(project_repo: Path) -> None:
+    result = runner.invoke(
+        cli.app, ["run", "fix the widget", "-y", "--value", VALUE_CMD, "--agent", "bogus"]
+    )
+    assert result.exit_code == 1
+    assert "unsupported agent" in result.output
 
 
 def test_run_rejects_non_positive_agent_timeout(project_repo: Path) -> None:
