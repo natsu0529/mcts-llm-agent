@@ -27,6 +27,7 @@ Research shows search helps: [SWE-Search (ICLR 2025)](https://arxiv.org/abs/2410
 uv tool install agent-mcts
 cd your-project
 agent-mcts run "fix the flaky test in tests/test_auth.py"
+agent-mcts run --agent codex "fix the flaky test in tests/test_auth.py"
 ```
 
 The run auto-detects your installed agent and your test command, then shows the plan before spending anything:
@@ -79,7 +80,7 @@ agent-mcts apply n2    # ...or pick a different branch
 | Agent | Headless | Session fork | Status |
 |---|---|---|---|
 | Claude Code | `claude -p` | native (`--fork-session`) | ✅ v0.1 |
-| Codex CLI | `codex exec` | resume + context injection | planned (v0.2) |
+| Codex CLI | `codex exec --json` | context injection | ✅ v0.2 |
 | Kimi CLI | `kimi -p` | context injection | planned (v0.3) |
 | Gemini CLI, OpenCode, ... | | | [adapter PRs welcome!](#contributing) |
 
@@ -88,7 +89,7 @@ agent-mcts apply n2    # ...or pick a different branch
 Zero config required. When you need it, `.agent-mcts.toml`:
 
 ```toml
-agent = "claude"
+agent = "claude"                  # or "codex"
 model = "haiku"                   # optional agent-model override
 
 [claude]
@@ -107,7 +108,7 @@ refine_width = 2                  # revision children per node
 max_depth = 3
 ```
 
-CLI flags (`-n`, `--max-cost`, `--value`, `--model`, `--agent-timeout`) override the file. The configured value command is automatically allowed inside the headless Claude session; use `claude.allowed_tools` for additional commands the agent may need. If your `claude` binary lives somewhere unusual, point `AGENT_MCTS_CLAUDE_BIN` at it.
+CLI flags (`--agent`, `-n`, `--max-cost`, `--value`, `--model`, `--agent-timeout`) override the file. The configured value command is automatically allowed inside the headless Claude session; use `claude.allowed_tools` for additional commands the agent may need. If your `claude` or `codex` binary lives somewhere unusual, point `AGENT_MCTS_CLAUDE_BIN` or `AGENT_MCTS_CODEX_BIN` at it.
 
 If an episode times out, the agent process fails, or you hit Ctrl-C mid-episode, agent-mcts snapshots any partial changes onto that node's branch before cleaning up its worktree. The node remains failed and is never selected automatically, but you can inspect it with `agent-mcts show <node>` and explicitly recover it with `agent-mcts apply <node>`. These snapshots run with `--no-verify` and signing disabled so a repo's commit hooks cannot reject them; in the rare case a snapshot still fails, the worktree is left on disk and its path is printed instead of being deleted.
 
@@ -124,7 +125,7 @@ Search hyperparameters are first-class: this is built by an MCTS researcher and 
 ## Roadmap
 
 - [x] **v0.1** — Claude Code adapter, UCT engine, worktree state, test-based value fn, live TUI
-- [ ] **v0.2** — Codex CLI adapter (+ `--agent` registry), LLM-as-judge value fn, `resume`, parallel expansion
+- [ ] **v0.2** — LLM-as-judge value fn, `resume`, parallel expansion
 - [ ] **v0.3** — Kimi CLI adapter, in-agent activation (`/tree` inside Claude Code via MCP)
 - [ ] **v0.4** — search-tree export + richer visualization, benchmark mode (same task, N agents, compare trees)
 
