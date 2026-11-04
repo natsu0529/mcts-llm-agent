@@ -91,6 +91,10 @@ class ClaudeCodeAdapter:
     def name(self) -> str:
         return "claude"
 
+    @property
+    def reports_cost(self) -> bool:
+        return True  # `total_cost_usd` in the final payload
+
     async def run_episode(
         self,
         prompt: str,

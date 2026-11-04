@@ -301,3 +301,8 @@ def test_fake_binary_is_executable_helper(tmp_path: Path) -> None:
     # Guard for the test helper itself: the fake must pass the --version probe.
     fake = make_fake_claude(tmp_path)
     assert os.access(fake, os.X_OK)
+
+
+def test_claude_reports_cost(tmp_path: Path) -> None:
+    fake = make_fake_claude(tmp_path)
+    assert ClaudeCodeAdapter(binary=str(fake)).reports_cost

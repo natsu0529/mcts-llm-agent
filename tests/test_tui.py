@@ -5,7 +5,7 @@ from pathlib import Path
 from rich.console import Console
 
 from agent_mcts.core.engine import SearchConfig, SearchEngine
-from agent_mcts.core.model import Node, NodeStatus, RunMeta, Tree
+from agent_mcts.core.model import Node, NodeStatus, RunMeta, TokenUsage, Tree
 from agent_mcts.tui import LiveSearchView, node_label, render_tree
 
 
@@ -72,6 +72,16 @@ class NullAdapter:
     def name(self) -> str:
         return "null"
 
+    @property
+    def reports_cost(self) -> bool:
+        return True
+
+
+class UnpricedAdapter(NullAdapter):
+    @property
+    def reports_cost(self) -> bool:
+        return False
+
 
 def test_live_view_prints_header_and_tree() -> None:
     tree = make_tree()
@@ -112,3 +122,25 @@ def test_live_view_marks_unknown_episode_cost() -> None:
     file = console.file
     assert isinstance(file, io.StringIO)
     assert "$0.00 + 1 unknown/$2.00" in file.getvalue()
+
+
+def test_live_view_shows_tokens_when_the_backend_reports_no_cost() -> None:
+    tree = make_tree()
+    tree.nodes["n1"].cost_usd = None
+    tree.nodes["n1"].usage = TokenUsage(input_tokens=1234, output_tokens=56)
+    engine = SearchEngine(
+        tree=tree,
+        adapter=UnpricedAdapter(),  # type: ignore[arg-type]  # never called: we only render
+        value_fn=None,  # type: ignore[arg-type]
+        worktrees=None,  # type: ignore[arg-type]
+        journal_path=Path("/dev/null"),
+        config=SearchConfig(max_nodes=5, max_cost_usd=2.0),
+    )
+    console = Console(file=io.StringIO(), width=120)
+    with LiveSearchView(engine, console) as view:
+        view.refresh()
+    file = console.file
+    assert isinstance(file, io.StringIO)
+    out = file.getvalue()
+    assert "tokens 1.2k in / 56 out" in out
+    assert "$" not in out  # no dollar ceiling can be enforced, so none is shown

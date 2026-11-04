@@ -68,3 +68,20 @@ def test_load_rejects_orphans(tmp_path: Path) -> None:
     journal.append_node(path, Node(id="n5", parent_id="ghost"))
     with pytest.raises(ValueError, match="orphaned"):
         journal.load(path)
+
+
+def test_load_accepts_journals_written_before_usage_existed(tmp_path: Path) -> None:
+    """v0.1 journals carry neither `usage` nor a null `cost_usd`; both must still load."""
+    path = tmp_path / "tree.jsonl"
+    path.write_text(
+        '{"kind": "meta", "run_id": "r1", "task": "t", "repo_root": "/x"}\n'
+        '{"kind": "node", "id": "n0", "status": "evaluated", "cost_usd": 0.0,'
+        ' "cost_known": true}\n'
+        '{"kind": "node", "id": "n1", "parent_id": "n0", "status": "evaluated",'
+        ' "cost_usd": null, "cost_known": true}\n'
+    )
+
+    loaded = journal.load(path)
+    assert loaded.nodes["n0"].cost_usd == 0.0
+    assert loaded.nodes["n0"].usage is None
+    assert loaded.nodes["n1"].cost_usd is None
