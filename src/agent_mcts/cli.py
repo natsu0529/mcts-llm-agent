@@ -14,8 +14,8 @@ from rich.console import Console
 from agent_mcts import __version__, project, tui, update_check
 from agent_mcts.adapters import AdapterError, ClaudeCodeAdapter
 from agent_mcts.core import journal
-from agent_mcts.core.engine import SearchEngine
-from agent_mcts.core.model import RunMeta, Tree
+from agent_mcts.core.engine import SearchConfig, SearchEngine
+from agent_mcts.core.model import Node, RunMeta, Tree
 from agent_mcts.core.value import CommandValueFunction
 from agent_mcts.core.worktree import GitError, WorktreeManager
 
@@ -115,10 +115,19 @@ def run(
             "[yellow]warning:[/] uncommitted changes detected — the search branches "
             "from HEAD and will not see them."
         )
+    if adapter.reports_cost:
+        budget = f"[bold]{cfg.search.max_nodes}[/] nodes / ${cfg.search.max_cost_usd:.2f}"
+    else:
+        budget = f"[bold]{cfg.search.max_nodes}[/] nodes ({adapter.name} does not report cost)"
+        if max_cost is not None or cfg.search.max_cost_usd != SearchConfig().max_cost_usd:
+            console.print(
+                f"[yellow]warning:[/] {adapter.name} does not report cost, so the "
+                f"${cfg.search.max_cost_usd:.2f} ceiling is not enforced — the budget is "
+                f"{cfg.search.max_nodes} episodes."
+            )
     console.print(
         f"Agent: [bold]{cfg.agent}[/] · Value: [bold]{value_command}[/] · "
-        f"Budget: [bold]{cfg.search.max_nodes}[/] nodes / ${cfg.search.max_cost_usd:.2f} · "
-        f"Timeout: {timeout_s:.0f}s/episode"
+        f"Budget: {budget} · Timeout: {timeout_s:.0f}s/episode"
     )
     if not yes:
         typer.confirm("Proceed?", abort=True)
@@ -160,13 +169,9 @@ def run(
                 "— its changes could not be committed to a branch."
             )
 
-    cost = f"${engine.total_cost_usd:.2f}"
-    if engine.unknown_cost_episodes:
-        cost += (
-            f" reported + {engine.unknown_cost_episodes} episode(s) with unknown cost "
-            "(cut off before the agent reported its spend)"
-        )
-    console.print(f"\nSearch finished: {engine.episodes} episodes, {cost} · run {run_id}")
+    console.print(
+        f"\nSearch finished: {engine.episodes} episodes, {_spend_summary(engine)} · run {run_id}"
+    )
     best = tree.best()
     if best is None or best.parent_id is None:
         console.print("No attempt beat the baseline. Inspect with: [bold]agent-mcts show[/]")
@@ -175,6 +180,32 @@ def run(
         summary = best.summary.splitlines()[0][:80] if best.summary else ""
         console.print(f"Best: [bold]{best.id}[/] reward={reward:.2f} {summary}")
         console.print("Next: [bold]agent-mcts show[/] · [bold]agent-mcts apply[/]")
+
+
+def _spend_summary(engine: SearchEngine) -> str:
+    lost = engine.unknown_cost_episodes
+    if engine.adapter.reports_cost:
+        spend = f"${engine.total_cost_usd:.2f}" + (" reported" if lost else "")
+    else:
+        spend = f"{tui.usage_label(engine)} tokens ({engine.adapter.name} does not report cost)"
+    if lost:
+        spend += (
+            f" + {lost} episode(s) with unknown cost (cut off before the agent reported its spend)"
+        )
+    return spend
+
+
+def _node_cost(node: Node) -> str:
+    if not node.cost_known:
+        return "unknown"
+    if node.cost_usd is None:
+        if node.usage is None:
+            return "not reported"
+        usage = node.usage
+        tokens = f"{tui.format_tokens(usage.input_tokens)} in / "
+        tokens += f"{tui.format_tokens(usage.output_tokens)} out tokens"
+        return f"not reported ({tokens})"
+    return f"${node.cost_usd:.2f}"
 
 
 def _load_tree(run_id: str | None) -> Tree:
@@ -210,11 +241,7 @@ def show(
         ("status", status),
         ("branch", found.branch or "-"),
         ("session", found.session_id or "-"),
-        (
-            "cost",
-            (f"${found.cost_usd:.2f}" if found.cost_known else "unknown")
-            + f" in {found.duration_s:.0f}s",
-        ),
+        ("cost", f"{_node_cost(found)} in {found.duration_s:.0f}s"),
         ("prompt", found.prompt or "-"),
         ("summary", found.summary or "-"),
         ("evaluation", found.eval_detail or "-"),

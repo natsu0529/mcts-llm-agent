@@ -37,6 +37,32 @@ def node_label(tree: Tree, node: Node) -> str:
     return f"{icon} [bold]{node.id}[/] {stats} {summary}{marker}"
 
 
+def format_tokens(count: int) -> str:
+    if count >= 1_000_000:
+        return f"{count / 1_000_000:.1f}M"
+    if count >= 1_000:
+        return f"{count / 1_000:.1f}k"
+    return str(count)
+
+
+def usage_label(engine: SearchEngine) -> str:
+    """`1.2k in / 300 out` — the spend figure for backends that meter tokens, not dollars."""
+    usage = engine.total_usage
+    return f"{format_tokens(usage.input_tokens)} in / {format_tokens(usage.output_tokens)} out"
+
+
+def spend_label(engine: SearchEngine) -> str:
+    """Compact spend-vs-ceiling for the status line.
+
+    Dollars against the ceiling when the backend reports them; token counts (with no
+    ceiling, since none can be enforced) otherwise. Lost figures are flagged in both.
+    """
+    unknown = f" + {engine.unknown_cost_episodes} unknown" if engine.unknown_cost_episodes else ""
+    if engine.adapter.reports_cost:
+        return f"cost ${engine.total_cost_usd:.2f}{unknown}/${engine.config.max_cost_usd:.2f}"
+    return f"tokens {usage_label(engine)}{unknown}"
+
+
 def render_tree(tree: Tree) -> RenderableType:
     root = tree.root
     if root is None:
@@ -95,12 +121,9 @@ class LiveSearchView:
         meta = engine.tree.meta
         cfg = engine.config
         header = Text(f"task: {meta.task}", style="bold")
-        cost = f"${engine.total_cost_usd:.2f}"
-        if engine.unknown_cost_episodes:
-            cost += f" + {engine.unknown_cost_episodes} unknown"
         status = Text(
             f"run {meta.run_id} · episodes {engine.episodes}/{cfg.max_nodes} · "
-            f"cost {cost}/${cfg.max_cost_usd:.2f}",
+            f"{spend_label(engine)}",
             style="dim",
         )
         return Group(header, status, render_tree(engine.tree))

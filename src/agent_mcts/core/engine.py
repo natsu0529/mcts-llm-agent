@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from agent_mcts.adapters.base import AdapterError, AdapterTimeout, AgentBackend
 from agent_mcts.core import journal, prompts
-from agent_mcts.core.model import Node, NodeStatus, Tree
+from agent_mcts.core.model import Node, NodeStatus, TokenUsage, Tree
 from agent_mcts.core.value import ValueFunction
 from agent_mcts.core.worktree import GitError, WorktreeManager
 
@@ -56,11 +56,26 @@ class SearchEngine:
 
     @property
     def total_cost_usd(self) -> float:
-        return sum(n.cost_usd for n in self.tree.nodes.values())
+        """Dollars reported so far; unreported episodes (`cost_usd=None`) count $0."""
+        return sum(n.cost_usd or 0.0 for n in self.tree.nodes.values())
 
     @property
     def unknown_cost_episodes(self) -> int:
+        """Episodes whose spend was *lost* (timeout, crash, Ctrl-C after launch)."""
         return sum(not n.cost_known for n in self.tree.nodes.values())
+
+    @property
+    def unreported_cost_episodes(self) -> int:
+        """Episodes run by a backend that never reports dollars (see `reports_cost`)."""
+        return sum(n.cost_usd is None for n in self.tree.nodes.values())
+
+    @property
+    def total_usage(self) -> TokenUsage:
+        total = TokenUsage()
+        for node in self.tree.nodes.values():
+            if node.usage is not None:
+                total = total + node.usage
+        return total
 
     @property
     def episodes(self) -> int:
@@ -176,6 +191,7 @@ class SearchEngine:
             node.summary = result.summary
             node.cost_usd = result.cost_usd
             node.cost_known = result.cost_known
+            node.usage = result.usage
             node.duration_s = result.duration_s
             if result.is_error:
                 self._fail_with_snapshot(node, f"agent reported an error: {result.summary}")
@@ -238,6 +254,8 @@ class SearchEngine:
     # -- bookkeeping ----------------------------------------------------------
 
     def _within_budget(self) -> bool:
+        # A backend that never reports dollars contributes $0 here and is bounded by
+        # max_nodes alone; a *lost* figure (cost_known=False) still halts the search.
         return (
             self.episodes < self.config.max_nodes
             and self.total_cost_usd < self.config.max_cost_usd

@@ -12,6 +12,21 @@ from typing import Any, Protocol
 from pydantic import BaseModel, Field
 
 
+class TokenUsage(BaseModel):
+    """Token counts for one episode, for backends that meter usage but not dollars."""
+
+    input_tokens: int = 0
+    cached_input_tokens: int = 0  # subset of input_tokens served from cache, if reported
+    output_tokens: int = 0
+
+    def __add__(self, other: TokenUsage) -> TokenUsage:
+        return TokenUsage(
+            input_tokens=self.input_tokens + other.input_tokens,
+            cached_input_tokens=self.cached_input_tokens + other.cached_input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+        )
+
+
 class AdapterError(RuntimeError):
     """Infrastructure failure: binary missing, timeout, unparseable output.
 
@@ -48,8 +63,9 @@ class EpisodeResult(BaseModel):
 
     session_id: str
     summary: str  # the agent's final message
-    cost_usd: float = 0.0
-    cost_known: bool = True  # False when the payload carried no usable cost figure
+    cost_usd: float | None = 0.0  # None: this backend never reports a dollar figure
+    cost_known: bool = True  # False when a cost figure was expected but lost
+    usage: TokenUsage | None = None  # token counts, when the backend reports them
     duration_s: float = 0.0
     is_error: bool = False
     raw: dict[str, Any] = Field(default_factory=dict)  # full agent-native payload
@@ -60,6 +76,17 @@ class AgentBackend(Protocol):
 
     @property
     def name(self) -> str: ...
+
+    @property
+    def reports_cost(self) -> bool:
+        """Whether completed episodes carry a dollar figure.
+
+        False means the backend meters tokens (or nothing) but never dollars, so
+        `max_cost_usd` cannot be enforced: its episodes return `cost_usd=None`, count
+        $0 toward the ceiling, and the search is bounded by `max_nodes`. This is
+        distinct from a *lost* figure (`cost_known=False`), which still stops the search.
+        """
+        ...
 
     async def run_episode(
         self,

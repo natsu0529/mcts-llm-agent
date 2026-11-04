@@ -7,6 +7,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from agent_mcts.adapters.base import TokenUsage
+
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
@@ -36,8 +38,9 @@ class Node(BaseModel):
     visits: int = 0  # MCTS N
     value_sum: float = 0.0  # MCTS W
 
-    cost_usd: float = 0.0
-    cost_known: bool = True
+    cost_usd: float | None = 0.0  # None: the backend never reports a dollar figure
+    cost_known: bool = True  # False: the figure was lost after the agent started
+    usage: TokenUsage | None = None  # token counts, when the backend reports them
     duration_s: float = 0.0
     created_at: datetime = Field(default_factory=_utcnow)
 

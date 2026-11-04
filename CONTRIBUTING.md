@@ -32,7 +32,7 @@ uv run agent-mcts --version
 
 ## What to contribute
 
-- **Agent adapters** are the highest-impact contribution: a small module implementing the `AgentBackend` protocol ([src/agent_mcts/adapters/base.py](src/agent_mcts/adapters/base.py)) for a coding agent CLI (Codex, Kimi, Gemini CLI, OpenCode, ...), without touching the search core. Use the Claude Code adapter as the reference implementation, and test against a fake binary (see `tests/test_claude_adapter.py`) so CI never calls a real API.
+- **Agent adapters** are the highest-impact contribution: a small module implementing the `AgentBackend` protocol ([src/agent_mcts/adapters/base.py](src/agent_mcts/adapters/base.py)) for a coding agent CLI (Codex, Kimi, Gemini CLI, OpenCode, ...), without touching the search core. Use the Claude Code adapter as the reference implementation, and test against a fake binary (see `tests/test_claude_adapter.py`) so CI never calls a real API. If the CLI never reports a dollar cost, return `reports_cost = False` and `cost_usd=None` (plus token `usage` when available) so the search is budgeted by episode count instead of stopping after one.
 - Bug reports, docs fixes, and benchmark tasks are always welcome.
 - Search-engine changes (selection policy, value functions) are welcome too — please include the reasoning, and numbers if you have them.
 

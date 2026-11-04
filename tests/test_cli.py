@@ -9,7 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from agent_mcts import __version__, cli
-from agent_mcts.adapters.base import EpisodeResult
+from agent_mcts.adapters.base import EpisodeResult, TokenUsage
 
 runner = CliRunner()
 
@@ -40,6 +40,10 @@ class FakeAdapter:
     def name(self) -> str:
         return "fake"
 
+    @property
+    def reports_cost(self) -> bool:
+        return True
+
     async def run_episode(
         self, prompt: str, workdir: Path, *, resume_session: str | None = None
     ) -> EpisodeResult:
@@ -49,6 +53,26 @@ class FakeAdapter:
             session_id=f"s{FakeAdapter.calls}",
             summary=f"approach {FakeAdapter.calls}",
             cost_usd=0.5,
+        )
+
+
+class FakeUnpricedAdapter(FakeAdapter):
+    """Stand-in for a backend that meters tokens but never reports dollars (Codex)."""
+
+    @property
+    def reports_cost(self) -> bool:
+        return False
+
+    async def run_episode(
+        self, prompt: str, workdir: Path, *, resume_session: str | None = None
+    ) -> EpisodeResult:
+        FakeAdapter.calls += 1
+        (workdir / "attempt.txt").write_text(f"episode {FakeAdapter.calls}\n")
+        return EpisodeResult(
+            session_id=f"s{FakeAdapter.calls}",
+            summary=f"approach {FakeAdapter.calls}",
+            cost_usd=None,
+            usage=TokenUsage(input_tokens=1200, output_tokens=300),
         )
 
 
@@ -112,6 +136,35 @@ def test_run_loads_claude_options_from_project_config(project_repo: Path) -> Non
 
     assert FakeAdapter.last_timeout_s == pytest.approx(90.0)
     assert FakeAdapter.last_allowed_tools == [f"Bash({VALUE_CMD})", "Bash(git diff *)"]
+
+
+def test_run_with_unpriced_agent_budgets_by_episodes(
+    project_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "ClaudeCodeAdapter", FakeUnpricedAdapter)
+
+    output = " ".join(do_run(["-n", "3"]).split())  # rich wraps long lines
+
+    assert "Budget: 3 nodes (fake does not report cost)" in output
+    assert "warning" not in output  # the default ceiling was never asked for
+    assert "Search finished: 1 episodes, 1.2k in / 300 out tokens" in output
+    assert "unknown cost" not in output
+    assert "$" not in output
+
+    node_view = runner.invoke(cli.app, ["show", "n1"])
+    assert node_view.exit_code == 0, node_view.output
+    assert "not reported (1.2k in / 300 out tokens)" in " ".join(node_view.output.split())
+
+
+def test_run_with_unpriced_agent_warns_about_an_explicit_ceiling(
+    project_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "ClaudeCodeAdapter", FakeUnpricedAdapter)
+
+    output = " ".join(do_run(["--max-cost", "5"]).split())
+
+    assert "warning:" in output
+    assert "$5.00 ceiling is not enforced" in output
 
 
 def test_run_rejects_non_positive_agent_timeout(project_repo: Path) -> None:

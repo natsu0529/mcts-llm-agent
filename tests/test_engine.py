@@ -15,7 +15,7 @@ import pytest
 from agent_mcts.adapters.base import AdapterError, AdapterTimeout, EpisodeResult
 from agent_mcts.core import journal
 from agent_mcts.core.engine import SearchConfig, SearchEngine
-from agent_mcts.core.model import NodeStatus, RunMeta, Tree
+from agent_mcts.core.model import NodeStatus, RunMeta, TokenUsage, Tree
 from agent_mcts.core.value import Evaluation
 from agent_mcts.core.worktree import GitError, WorktreeManager
 
@@ -29,6 +29,10 @@ class FakeBackend:
     @property
     def name(self) -> str:
         return "fake"
+
+    @property
+    def reports_cost(self) -> bool:
+        return True
 
     async def run_episode(
         self, prompt: str, workdir: Path, *, resume_session: str | None = None
@@ -256,6 +260,85 @@ def test_result_without_cost_marks_the_node_unknown(repo: Path) -> None:
     assert child.status is NodeStatus.EVALUATED  # the episode itself succeeded
     assert not child.cost_known
     assert len(backend.calls) == 1  # ...but the budget is no longer enforceable
+
+
+def test_unreported_cost_backend_is_budgeted_by_episodes(repo: Path) -> None:
+    """A backend that never reports dollars (Codex meters tokens only) must not stall.
+
+    `cost_usd=None` is "this backend has no dollar figure", not "the figure was lost":
+    such episodes count $0 toward the ceiling and the search runs to `max_nodes`.
+    """
+
+    class UnreportedBackend(FakeBackend):
+        @property
+        def reports_cost(self) -> bool:
+            return False
+
+        async def run_episode(
+            self, prompt: str, workdir: Path, *, resume_session: str | None = None
+        ) -> EpisodeResult:
+            call_no = len(self.calls) + 1
+            self.calls.append({"prompt": prompt, "workdir": workdir, "resume": resume_session})
+            (workdir / f"attempt_{call_no}.txt").write_text("work\n")
+            return EpisodeResult(
+                session_id=f"s{call_no}",
+                summary=f"approach {call_no}",
+                cost_usd=None,
+                usage=TokenUsage(input_tokens=100, cached_input_tokens=40, output_tokens=10),
+            )
+
+    backend = UnreportedBackend()
+    journal_path = repo / ".agent-mcts" / "runs" / "r1" / "tree.jsonl"
+    engine = SearchEngine(
+        tree=Tree(RunMeta(run_id="r1", task="t", repo_root=str(repo))),
+        adapter=backend,
+        value_fn=ScriptedValue([0.0, 0.2, 0.3, 0.4]),
+        worktrees=WorktreeManager(repo, "r1"),
+        journal_path=journal_path,
+        config=SearchConfig(max_nodes=3, max_cost_usd=0.01, root_width=3),
+    )
+    tree = asyncio.run(engine.run())
+
+    assert len(backend.calls) == 3  # the $0.01 ceiling is unenforceable, max_nodes rules
+    root = tree.root
+    assert root is not None
+    children = tree.children(root.id)
+    assert all(c.status is NodeStatus.EVALUATED for c in children)
+    assert all(c.cost_usd is None and c.cost_known for c in children)
+    assert engine.total_cost_usd == 0.0
+    assert engine.unknown_cost_episodes == 0
+    assert engine.unreported_cost_episodes == 3
+    assert engine.total_usage == TokenUsage(
+        input_tokens=300, cached_input_tokens=120, output_tokens=30
+    )
+    # Unreported cost and usage survive the journal round trip.
+    loaded = journal.load(journal_path).nodes[children[0].id]
+    assert loaded.cost_usd is None
+    assert loaded.usage == children[0].usage
+
+
+def test_unreported_backend_still_stops_on_a_lost_figure(repo: Path) -> None:
+    """Not reporting dollars does not relax the rule for episodes that were cut off."""
+
+    class UnreportedThenTimingOut(FakeBackend):
+        @property
+        def reports_cost(self) -> bool:
+            return False
+
+        async def run_episode(
+            self, prompt: str, workdir: Path, *, resume_session: str | None = None
+        ) -> EpisodeResult:
+            call_no = len(self.calls) + 1
+            self.calls.append({"prompt": prompt, "workdir": workdir, "resume": resume_session})
+            (workdir / f"attempt_{call_no}.txt").write_text("work\n")
+            if call_no == 2:
+                raise AdapterTimeout("episode timed out", duration_s=1.0)
+            return EpisodeResult(session_id=f"s{call_no}", summary="ok", cost_usd=None)
+
+    config = SearchConfig(max_nodes=5, root_width=5)
+    _tree, backend, _ = run_search(repo, [0.0, 0.2], config, backend=UnreportedThenTimingOut())
+
+    assert len(backend.calls) == 2  # the lost figure halted the search
 
 
 def test_interrupt_preserves_partial_work(repo: Path) -> None:
